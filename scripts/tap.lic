@@ -1,0 +1,10 @@
+#This is a script to cast waggle at anybody who taps you hope it helps~deadly~hydrox
+
+loop{
+x = matchwait /.*?taps you lightly on the shoulder\./
+if x =~ /(.*?) taps/
+	y = $1
+	start_script("waggle", [y])
+	wait_while{running? 'waggle'}
+end
+}

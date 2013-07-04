@@ -1,0 +1,2164 @@
+##quiet
+=begin
+
+	SpiffyLooter by SpiffyJr
+	Currently being worked on by Tillek (hazado22@hotmail.com)
+
+Visit http://forum.gsplayers.com/showthread.php?t=61719 for list of all fixes.
+
+v4.88
+Now goes to the bank before returning to the room you started ;sloot3 sell in.
+Changed the Selling report to show up after you return to the room you started in.
+
+# Name: SpiffyLooter 3
+# Author: Tillek
+# Category: loot
+# Tags: looter, gui, skin, search, sell
+# Version: 4.88
+=end
+
+unless defined?(GameObj.load_data)
+	echo "this script requires an update to lich (;updater update)"
+	exit
+end
+
+@@version = 4.88
+
+################################################################################
+# Variable declaration
+################################################################################
+# Character Settings
+settings 					= CharSettings.to_hash
+settings['skin_exclude'] 	||= Array.new
+
+# Globals
+$sloot_has_disk		||= false
+$sloot_disk_full	||= false
+$sloot_hooks 		= Array.new
+
+# Common vars
+closed_sacks		= Array.new
+found_sacks			= Hash.new	# cache for found sacks (save those cycles!)
+found_boxsacks		= Hash.new
+invalid_ammo 		= LimitedArray.new; invalid_ammo.max_size = 25
+prev_stance			= checkstance
+prev_stance_percent	= percentstance
+skin_prepared		= false
+stored_item			= nil
+stored_result		= nil
+stored_item2		= nil
+stored_result2		= nil
+stored_right_hand 	= false
+stored_left_hand	= false
+sacks 				= Array.new
+boxsacks			= Array.new
+types 				= Array.new
+stored_right_hand 	= false
+stored_left_hand	= false
+locksmithing 		= false
+change_stance		= nil
+skinningweaponout	= nil
+
+################################################################################
+# Procedures
+################################################################################
+# Uses go2 to run to a room
+go2 = proc { |room|
+	next if Room.current.id.to_s == room.to_s
+
+	wait_while{ running?('go2') }
+	start_script('go2', [ room.to_s, '_disable_confirm_' ]);
+	wait_while{ running?('go2') }
+}
+	
+# Log some useful stuffs
+write_log = proc { |msg| Script.log("[#{Time.now.strftime('%Y-%m-%d %I:%M:%S %p')}] (#{Char.name}) #{msg}\n") }
+
+# Hooray for perdy messages!
+msg = proc { |str,type|
+	start_string = ""
+	end_string = ""
+
+	if type == :bold || type == :all
+		start_string += "#{monsterbold_start}"
+		end_string += "\n#{monsterbold_end}"
+	end
+	
+	if (type == :mono || type == :all) && !$fake_stormfront
+		start_string += "<output class=\"mono\"/>"
+		end_string += "\r\n<output class=\"\"/>"
+	end
+	
+	puts sprintf '%s%s%s', start_string, str, end_string
+}
+
+# Setup GUI for sloot
+setup = proc {
+	gtk_globals = Hash.new
+	gtk_locals = Hash.new
+
+	window = window_action = nil
+	
+	Gtk.queue {
+		ttips = Gtk::Tooltips.new.enable
+		ttips_text = { 
+			'enable_close_sacks' => "Checking this will attempt to keep your sacks closed.",
+			'overflowsack' => "Enter your overflow sack(s) to place loot into when your regular sack is full.\ne.g., \"pack,sack,cloak,hat\"",
+			'enable_search_all' => "Checking this enables searching all dead critters rather than one at a time.",
+			'enable_disking' => "Checking this enables disking of boxes if you have a disk.",
+			'enable_phasing' => "Checking this enables phasing of boxes if you meet the requirements.\nRequires: level 4 Sorcerer with 704 learned",
+			'enable_gather' => "Checking this enables gathering of ammunition after looting.",
+			'ammo_name' => "Enter the full name of your ammunition here.",
+			'enable_safe_hiding' => "Checking this enables looting only if not hiding or there are no creatures present.",
+			'safe_ignore' => "Enter the name of any creatures you want to ignore when safe hiding.\nThis field is a regular expression so use \"|\" to separate names.",
+			'enable_stow_left' => "Checking this will store your left hand to loot if your hands are full.  This option will override (?) stow right hand for looting if you have both checked.  This will also store your left hand while skinning.  Having this enabled along with (?) Stow right hand and (?) Enable alternate will cause you to store both hands then get your skinning weapon and skin.",
+			'enable_stow_right' => "Checking this will store your right hand to loot if your hands are full.  If you have (?) Stow left hand checked along with this option, it will be overriden for looting.  This will also store your right hand while skinning.  Having this enabled along with (?) Stow left hand and (?) Enable alternate will cause you to store both hands then get your skinning weapon and skin.",
+			'enable_self_drops' => "Checking this enables looting of items that were dropped from creatures you searched.",
+			'enable_skinning' => "Checking this enables all skinning functionality.",
+			'enable_skin_alternate' => "Checking this enables an alternate weapon for skinning.",
+			'enable_skin_offensive' => "Checking this enables skinning in offensive for a slight success increase (not proven).",
+			'enable_skin_kneel' => "Checking this enables skinning while kneeling for a slight success increase.",
+			'enable_skin_safe_mode' => "Checking this enables safe mode and will only stance/kneel if there are no alive critters present.",
+			'enable_skin_604' => "Checking this enables the use of 604 (Skinning) if you meet the requirements.\nRequires: level 6 Ranger with 606 learned",
+			'enable_skin_sigil' => "Checking this enables the use of Sigil of Resolve if you meet the requirements.\nRequires: GoS member with Sigil of Resolve learned",
+			'enable_skin_stats' => "Checking this enables skinning statistics. You can view them by using ;sloot stats.",
+			'enable_skin_stance_first' => "Checking this enables stancing to previous stance before standing. This is disabled by default to prevent incuring additional roundtime from standing in defensive.",
+			'skin_stand_verb' => "Enter the stand verb if you don't want to use the default STAND verb.\ne.g., \"rgambit tumble left\"",
+			'enable_sell_chronomage' => "Checking this enables giving gold rings to the Chronomage during the sell process for credit towards a Chronomage ride.",
+			'enable_sell_drop_items' => "Checking this will drop items that you can't sell. CAUTION: May drop items you want to keep",
+			'enable_sell_share_silvers' => "Checking this enables sharing all silvers with the group before depositing and gives them a few seconds to deposit their coins.",
+			'sell_withdraw' => "Enter an amount to withdraw after the sell process completes. This is useful for towns with gate fees such as Icemule Trace.",
+			'enable_sell_locksmith' => "Checking this enables the use the NPC locksmith to open your boxes.",
+			'enable_sell_wait_line' => "Checking this enables waiting at the locksmith if another person is present.",
+			'enable_sell_stockpile' => "Checking this enables stockpiling of gems so that they can be turned in later for bounties. This requires you to have empty jars from the alchemist available in your locker.",
+			'enable_sell_force_bounty_gems' => "Checking this enables selling of gems for bounties even if you normally have gem selling disabled.",
+			'pause_script_boxes' => "Checking this will pause the script when the box still has loot inside it when it attempts to trash it.",
+			'skinweaponblunt' => "Used in skinning : krynch, greater krynch, massive krynch, krag dweller, lesser stone gargoyle, stone gargoyle, spiked cavern urchin and stone mastiff",
+			'skinweaponfire' => "Used in skinning : massive troll king",
+			'exclude_list' => "Separate your items with a \| and it just needs to have a portion of the name to exclude it\.  i\.e\. \"troll skin\|blue lapis lazuli\"\.",
+			'save_sell_boxes' => "Will save silver/gold/mithril boxes and after done using the locksmith will take those boxes to the pawnshop to sell.",
+			'critter_exclude' => "This will prevent you from searching creatures that you dont wan't to search. Example: \"skayl|glacei\"",
+			'change_stance_name' => "Enter the stance you want to change to before looting and remain at after its done",
+			'empty_boxes' => "Will use the command EMPTY on the box if any loot left after first loot. Will empty them into your Stow sack, then your Overflow Sacks, then attempt to trash it according to the rest of the options you have picked."
+		}
+		
+		gtk_globals['ammosack'] = Gtk::Entry.new.set_text(UserVars.ammosack || "")
+		gtk_globals['boxsack'] = Gtk::Entry.new.set_text(UserVars.boxsack || "")
+		gtk_globals['clothingsack'] = Gtk::Entry.new.set_text(UserVars.clothingsack || "")
+		gtk_globals['foragesack'] = Gtk::Entry.new.set_text(UserVars.foragesack || "")
+		gtk_globals['gemsack'] = Gtk::Entry.new.set_text(UserVars.gemsack || "")
+		gtk_globals['herbsack'] = Gtk::Entry.new.set_text(UserVars.herbsack || "")
+		gtk_globals['jewelrysack'] = Gtk::Entry.new.set_text(UserVars.jewelrysack || "")
+		gtk_globals['lockpicksack'] = Gtk::Entry.new.set_text(UserVars.lockpicksack || "")
+		gtk_globals['magicsack'] = Gtk::Entry.new.set_text(UserVars.magicsack || "")
+		gtk_globals['reagentsack'] = Gtk::Entry.new.set_text(UserVars.reagentsack || "")
+		gtk_globals['scrollsack'] = Gtk::Entry.new.set_text(UserVars.scrollsack || "")
+		gtk_globals['skinsack'] = Gtk::Entry.new.set_text(UserVars.skinsack || "")
+		gtk_globals['uncommonsack'] = Gtk::Entry.new.set_text(UserVars.uncommonsack || "")
+		gtk_globals['wandsack'] = Gtk::Entry.new.set_text(UserVars.wandsack || "")
+		gtk_globals['stowsack'] = Gtk::Entry.new.set_text(UserVars.stowsack || "")
+		gtk_globals['skinweapon'] = Gtk::Entry.new.set_text(UserVars.skinweapon || "")
+		gtk_globals['skinweaponsack'] = Gtk::Entry.new.set_text(UserVars.skinweaponsack || "")
+		gtk_globals['skinweaponblunt'] = Gtk::Entry.new.set_text(UserVars.skinweaponblunt || "")
+		gtk_globals['skinweaponbluntsack'] = Gtk::Entry.new.set_text(UserVars.skinweaponbluntsack || "")
+		gtk_globals['skinweaponfire'] = Gtk::Entry.new.set_text(UserVars.skinweaponfire || "")
+		gtk_globals['skinweaponfiresack'] = Gtk::Entry.new.set_text(UserVars.skinweaponfiresack || "")
+		
+		gtk_locals['enable_close_sacks'] = Gtk::CheckButton.new('(?) Keep sacks shut').set_active(settings['enable_close_sacks'])
+		gtk_locals['overflowsack'] = Gtk::Entry.new.set_text(settings['overflowsack'] || "")
+		gtk_locals['enable_search_all'] = Gtk::CheckButton.new('(?) Search all dead').set_active(settings['enable_search_all'])
+		gtk_locals['enable_loot_box'] = Gtk::CheckButton.new('Boxes').set_active(settings['enable_loot_box'])
+		gtk_locals['enable_loot_clothing'] = Gtk::CheckButton.new('Clothing').set_active(settings['enable_loot_clothing'])
+		gtk_locals['enable_loot_gem'] = Gtk::CheckButton.new('Gems').set_active(settings['enable_loot_gem'])
+		gtk_locals['enable_loot_herb'] = Gtk::CheckButton.new('Herbs').set_active(settings['enable_loot_herb'])
+		gtk_locals['enable_loot_jewelry'] = Gtk::CheckButton.new('Jewelry').set_active(settings['enable_loot_jewelry'])
+		gtk_locals['enable_loot_lockpick'] = Gtk::CheckButton.new('Lockpicks').set_active(settings['enable_loot_lockpick'])
+		gtk_locals['enable_loot_magic'] = Gtk::CheckButton.new('Magical').set_active(settings['enable_loot_magic'])
+		gtk_locals['enable_loot_reagent'] = Gtk::CheckButton.new('Reagents').set_active(settings['enable_loot_reagent'])
+		gtk_locals['enable_loot_scroll'] = Gtk::CheckButton.new('Scrolls').set_active(settings['enable_loot_scroll'])
+		gtk_locals['enable_loot_skin'] = Gtk::CheckButton.new('Skins').set_active(settings['enable_loot_skin'])
+		gtk_locals['enable_loot_uncommon'] = Gtk::CheckButton.new('Uncommon').set_active(settings['enable_loot_uncommon'])
+		gtk_locals['enable_loot_wand'] = Gtk::CheckButton.new('Wands').set_active(settings['enable_loot_wand'])
+		gtk_locals['enable_disking'] = Gtk::CheckButton.new('(?) Disking').set_active(settings['enable_disking'])
+		gtk_locals['enable_phasing'] = Gtk::CheckButton.new('(?) Phasing').set_active(settings['enable_phasing'])
+		gtk_locals['enable_gather'] = Gtk::CheckButton.new('(?) Gather ammo').set_active(settings['enable_gather'])
+		gtk_locals['ammo_name'] = Gtk::Entry.new.set_text(settings['ammo_name'] || "")
+		gtk_locals['enable_safe_hiding'] = Gtk::CheckButton.new('(?) Safe hiding').set_active(settings['enable_safe_hiding'])
+		gtk_locals['safe_ignore'] = Gtk::Entry.new.set_text(settings['safe_ignore'] || "")
+		gtk_locals['enable_stow_left'] = Gtk::CheckButton.new('(?) Stow left hand').set_active(settings['enable_stow_left'])
+		gtk_locals['enable_stow_right'] = Gtk::CheckButton.new('(?) Stow right hand').set_active(settings['enable_stow_right'])
+		gtk_locals['enable_self_drops'] = Gtk::CheckButton.new('(?) Self loot only').set_active(settings['enable_self_drops'])
+		gtk_locals['enable_skinning'] = Gtk::CheckButton.new('(?) Enable skinning').set_active(settings['enable_skinning'])
+		gtk_locals['enable_skin_alternate'] = Gtk::CheckButton.new('(?) Enable alternate').set_active(settings['enable_skin_alternate'])
+		gtk_locals['enable_skin_offensive'] = Gtk::CheckButton.new('(?) Skin in offensive').set_active(settings['enable_skin_offensive'])
+		gtk_locals['enable_skin_kneel'] = Gtk::CheckButton.new('(?) Kneel to skin').set_active(settings['enable_skin_kneel'])
+		gtk_locals['enable_skin_safe_mode'] = Gtk::CheckButton.new('(?) Safe mode').set_active(settings['enable_skin_safe_mode'])
+		gtk_locals['enable_skin_stance_first'] = Gtk::CheckButton.new('(?) Stance first').set_active(settings['enable_skin_stance_first'])
+		gtk_locals['enable_skin_604'] = Gtk::CheckButton.new('(?) Use 604').set_active(settings['enable_skin_604'])
+		gtk_locals['enable_skin_sigil'] = Gtk::CheckButton.new('(?) Use Sigil of Resolve').set_active(settings['enable_skin_sigil'])
+		gtk_locals['enable_skin_stats'] = Gtk::CheckButton.new('(?) Track statistics').set_active(settings['enable_skin_stats']).set_sensitive(false)
+		gtk_locals['skin_stand_verb'] = Gtk::Entry.new.set_text(settings['skin_stand_verb'] || "")
+		gtk_locals['exclude_list'] = Gtk::Entry.new.set_text(settings['exclude_list'] || "")
+		gtk_locals['enable_sell_type_clothing'] = Gtk::CheckButton.new('Clothing').set_active(settings['enable_sell_type_clothing'])
+		gtk_locals['enable_sell_type_gem'] = Gtk::CheckButton.new('Gems').set_active(settings['enable_sell_type_gem'])
+		gtk_locals['enable_sell_type_jewelry'] = Gtk::CheckButton.new('Jewelry').set_active(settings['enable_sell_type_jewelry'])
+		gtk_locals['enable_sell_type_lockpick'] = Gtk::CheckButton.new('Lockpicks').set_active(settings['enable_sell_type_lockpick'])
+		gtk_locals['enable_sell_type_magic'] = Gtk::CheckButton.new('Magical').set_active(settings['enable_sell_type_magic'])
+		gtk_locals['enable_sell_type_reagent'] = Gtk::CheckButton.new('Reagents').set_active(settings['enable_sell_type_reagent'])
+		gtk_locals['enable_sell_type_scroll'] = Gtk::CheckButton.new('Scrolls').set_active(settings['enable_sell_type_scroll'])
+		gtk_locals['enable_sell_type_skin'] = Gtk::CheckButton.new('Skins').set_active(settings['enable_sell_type_skin'])
+		gtk_locals['enable_sell_type_wand'] = Gtk::CheckButton.new('Wands').set_active(settings['enable_sell_type_wand'])
+		gtk_locals['enable_sell_chronomage'] = Gtk::CheckButton.new('(?) Rings -> Chrono').set_active(settings['enable_sell_chronomage'])
+		gtk_locals['enable_sell_drop_items'] = Gtk::CheckButton.new('(?) Drop items that can\'t be sold').set_active(settings['enable_sell_drop_items'])
+		gtk_locals['enable_sell_share_silvers'] = Gtk::CheckButton.new('(?) Share silvers').set_active(settings['enable_sell_share_silvers'])
+		gtk_locals['sell_withdraw'] = Gtk::Entry.new.set_text(settings['sell_withdraw'] || "")
+		gtk_locals['enable_sell_locksmith'] = Gtk::CheckButton.new('(?) Enable locksmith').set_active(settings['enable_sell_locksmith'])
+		gtk_locals['enable_sell_wait_line'] = Gtk::CheckButton.new('(?) Wait in line').set_active(settings['enable_sell_wait_line'])
+		gtk_locals['enable_sell_stockpile'] = Gtk::CheckButton.new('(?) Stockpile gems').set_active(settings['enable_sell_stockpile']).set_sensitive(false)
+		gtk_locals['enable_sell_force_bounty_gems'] = Gtk::CheckButton.new('(?) Force sell gems').set_active(settings['enable_sell_force_bounty_gems']).set_sensitive(false)
+		gtk_locals['pause_script_boxes'] = Gtk::CheckButton.new('(?) Pause script when boxes still have loot').set_active(settings['pause_script_boxes'])
+		gtk_locals['save_sell_boxes'] = Gtk::CheckButton.new('(?) Sell silver/gold/mithril boxes').set_active(settings['save_sell_boxes'])
+		gtk_locals['critter_exclude'] = Gtk::Entry.new.set_text(settings['critter_exclude'] || "")
+		gtk_locals['change_stance'] = Gtk::CheckButton.new('(?) Pre-loot Stance').set_active(settings['change_stance'])
+		gtk_locals['change_stance_name'] = Gtk::Entry.new.set_text(settings['change_stance_name'] || "")
+		gtk_locals['empty_boxes'] = Gtk::CheckButton.new('(?) EMPTY Boxes if loot left').set_active(settings['empty_boxes'])
+		
+		
+		# Signals		
+		gtk_locals['ammo_name'].sensitive = gtk_locals['enable_gather'].active?
+		gtk_locals['enable_gather'].signal_connect('toggled') { gtk_locals['ammo_name'].sensitive = gtk_locals['enable_gather'].active? }
+		
+		gtk_locals['safe_ignore'].sensitive = gtk_locals['enable_safe_hiding'].active?
+		gtk_locals['enable_safe_hiding'].signal_connect('toggled') { gtk_locals['safe_ignore'].sensitive = gtk_locals['enable_safe_hiding'].active? }
+		
+		gtk_locals['change_stance_name'].sensitive = gtk_locals['change_stance'].active?
+		gtk_locals['change_stance'].signal_connect('toggled') { gtk_locals['change_stance_name'].sensitive = gtk_locals['change_stance'].active? }
+		
+		# Add tooltips
+		ttips_text.each_pair { |widget,tip|
+			if widget = gtk_globals[widget] || gtk_locals[widget]
+				ttips.set_tip(widget,tip,'')
+			end
+		}
+		
+		# Primary Window
+		window = Gtk::Window.new
+		window.title = "SLoot v#{@@version} configuration for #{Char.name}"
+		window.border_width = 3
+		window.resizable = true
+		window.resize(450, 300)
+				
+		# Notebooks for tabs at the top
+		nb = Gtk::Notebook.new.set_show_border(true).set_tab_border(3)
+		
+		#
+		# Notebook Page 1 - Sacks
+		#
+		vb_pg1 = Gtk::VBox.new(false,1).set_border_width(3)
+		
+		#
+		# Page 1, Frame 1 - Sacks
+		#
+		vb_pg1_1 = Gtk::VBox.new(false,1).set_border_width(3)
+		fr_pg1_1 = Gtk::Frame.new.set_border_width(5).set_label_widget(Gtk::Label.new.set_markup('<big><b>Sacks</b></big>'))
+		fr_pg1_1.add(vb_pg1_1)
+		vb_pg1.pack_start(fr_pg1_1,false)
+
+		lbl = Gtk::Label.new.set_markup("SLoot features sorting of loot by allowing you to specify " +
+			"a sack for each type of loot. Use the fields below to set the sack(s) for " +
+			"each loot type.")
+		lbl.set_wrap(true).set_width_request(500).set_padding(0,10)
+		vb_pg1_1.pack_start(lbl,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(Gtk::Label.new('Ammunition:')).set_width_request(100))
+		hb.pack_start(gtk_globals['ammosack'],false)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(Gtk::Label.new('Clothing:')).set_width_request(100))
+		hb.pack_start(gtk_globals['clothingsack'],false)
+		vb_pg1_1.pack_start(hb,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(Gtk::Label.new('Boxes:')).set_width_request(100))
+		hb.pack_start(gtk_globals['boxsack'],false)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(Gtk::Label.new('Gems:')).set_width_request(100))
+		hb.pack_start(gtk_globals['gemsack'],false)
+		vb_pg1_1.pack_start(hb,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(Gtk::Label.new('Herbs:')).set_width_request(100))
+		hb.pack_start(gtk_globals['herbsack'],false)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(Gtk::Label.new('Jewelry:')).set_width_request(100))
+		hb.pack_start(gtk_globals['jewelrysack'],false)
+		vb_pg1_1.pack_start(hb,false)
+
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(Gtk::Label.new('Lockpicks:')).set_width_request(100))
+		hb.pack_start(gtk_globals['lockpicksack'],false)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(Gtk::Label.new('Magical:')).set_width_request(100))
+		hb.pack_start(gtk_globals['magicsack'],false)
+		vb_pg1_1.pack_start(hb,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(Gtk::Label.new('Reagents:')).set_width_request(100))
+		hb.pack_start(gtk_globals['reagentsack'],false)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(Gtk::Label.new('Scrolls:')).set_width_request(100))
+		hb.pack_start(gtk_globals['scrollsack'],false)
+		vb_pg1_1.pack_start(hb,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(Gtk::Label.new('Skins:')).set_width_request(100))
+		hb.pack_start(gtk_globals['skinsack'],false)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(Gtk::Label.new('Uncommon:')).set_width_request(100))
+		hb.pack_start(gtk_globals['uncommonsack'],false)
+		vb_pg1_1.pack_start(hb,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(Gtk::Label.new('Wands:')).set_width_request(100))
+		hb.pack_start(gtk_globals['wandsack'],false)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(Gtk::Label.new('Stow:')).set_width_request(100),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_globals['stowsack']))
+		vb_pg1_1.pack_start(hb,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(Gtk::Label.new('(?) Overflow:')).set_width_request(100),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['overflowsack'].set_width_request(418)))
+		vb_pg1_1.pack_start(hb,false)
+		
+		#
+		# Page 1, Frame 2 - Advanced Options
+		#
+		vb_pg1_2 = Gtk::VBox.new(false,1).set_border_width(3)
+		fr_pg1_2 = Gtk::Frame.new.set_border_width(5).set_label_widget(Gtk::Label.new.set_markup('<big><b>Advanced Options</b></big>'))
+		fr_pg1_2.add(vb_pg1_2)
+		vb_pg1.pack_start(fr_pg1_2,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_close_sacks'].set_width_request(140)),false)
+		vb_pg1_2.pack_start(hb,false)
+		
+		lbl = Gtk::Label.new.set_markup("<span color=\"blue\" weight=\"bold\">Tip: (?) " +
+			"in front of any option means you can hover over it for additional information.</span>")
+		lbl.set_wrap(true).set_width_request(500).set_padding(0,10)
+		vb_pg1_1.pack_start(lbl,false)
+
+		nb.append_page(vb_pg1,Gtk::Label.new('Sacks'))
+		
+		#
+		# Notebook Page 2 - Looting
+		#
+		vb_pg2 = Gtk::VBox.new(false,1).set_border_width(3)
+		
+		#
+		# Page 2, Frame 1 - Looting
+		#
+		vb_pg2_1 = Gtk::VBox.new(false,1).set_border_width(3)
+		fr_pg2_1 = Gtk::Frame.new.set_border_width(5).set_label_widget(Gtk::Label.new.set_markup('<big><b>Looting</b></big>'))
+		fr_pg2_1.add(vb_pg2_1)
+		vb_pg2.pack_start(fr_pg2_1,false)
+		
+		lbl = Gtk::Label.new.set_markup("Use the options below to specify how " +
+		"SLoot behaves when looting. Each checkbox represents a loot category which SLoot will only " + 
+		"pickup if checked. You can also enabled advanced features such as autolooting, disking/phasing " +
+		"of boxes, and looting drops from critters you search.")
+		lbl.set_wrap(true).set_width_request(500).set_padding(0,10)
+		vb_pg2_1.pack_start(lbl,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_search_all'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(Gtk::Label.new('(?) Critter Search Exclude:')).set_width_request(150),false)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(gtk_locals['critter_exclude'].set_width_request(235)),false)
+		vb_pg2_1.pack_start(hb,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_loot_box'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_loot_clothing'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_loot_gem'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_loot_herb'].set_width_request(129)),false)
+		vb_pg2_1.pack_start(hb,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_loot_jewelry'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_loot_lockpick'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_loot_magic'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_loot_reagent'].set_width_request(129)),false)
+		vb_pg2_1.pack_start(hb,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_loot_scroll'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_loot_skin'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_loot_wand'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_loot_uncommon'].set_width_request(129)),false)
+		vb_pg2_1.pack_start(hb,false)
+		
+		#
+		# Page 2, Frame 1 - Looting
+		#
+		vb_pg2_2 = Gtk::VBox.new(false,1).set_border_width(3)
+		fr_pg2_1 = Gtk::Frame.new.set_border_width(5).set_label_widget(Gtk::Label.new.set_markup('<big><b>Advanced Options</b></big>'))
+		fr_pg2_1.add(vb_pg2_2)
+		vb_pg2.pack_start(fr_pg2_1,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_disking'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_stow_left'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_stow_right'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_self_drops'].set_width_request(129)),false)
+		
+		if Char.prof == 'Sorcerer' && Char.level > 3 && Spell[704].known?
+			hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_phasing'].set_width_request(129)),false)
+		end
+		
+		vb_pg2_2.pack_start(hb,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,0).add(gtk_locals['change_stance'].set_width_request(129)),false)
+		hb.pack_start(gtk_locals['change_stance_name'],false)
+		vb_pg2_2.pack_start(hb,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,0).add(gtk_locals['enable_safe_hiding'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(Gtk::Label.new('(?) Safe Hiding Creature Ignore:')).set_width_request(200),false)
+		hb.pack_start(gtk_locals['safe_ignore'],false)
+		vb_pg2_2.pack_start(hb,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,0).add(gtk_locals['enable_gather'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(Gtk::Label.new('(?) Full Ammo Name:')).set_width_request(200),false)
+		hb.pack_start(gtk_locals['ammo_name'],false)
+		vb_pg2_2.pack_start(hb,false)
+		
+		nb.append_page(vb_pg2, Gtk::Label.new('Looting'))
+		
+		#
+		# Notebook Page 3 - Skinning
+		#
+		vb_pg3 = Gtk::VBox.new(false,1).set_border_width(3)
+		
+		#
+		# Page 3, Frame 1 - Skinning
+		#
+		vb_pg3_1 = Gtk::VBox.new(false,1).set_border_width(3)
+		fr_pg3_1 = Gtk::Frame.new.set_border_width(5).set_label_widget(Gtk::Label.new.set_markup('<big><b>Skinning</b></big>'))
+		fr_pg3_1.add(vb_pg3_1)
+		vb_pg3.pack_start(fr_pg3_1,false)
+		
+		lbl = Gtk::Label.new.set_markup("The options below give you absolute control over skinning critters. " +
+			"You can use your current weapon, an alternate weapon, left or right hand, and advanced enhancements " +
+			"such as kneeling, stancing to offensive, Skinning (604) and Sigil of Resolve.")
+		lbl.set_wrap(true).set_width_request(500).set_padding(0,10)
+		vb_pg3_1.pack_start(lbl,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_skinning'].set_width_request(129)),false)
+		vb_pg3_1.pack_start(hb,false)
+		
+		#
+		# Page 3, Frame 2 - Alternate Weapon
+		#
+		vb_pg3_2 = Gtk::VBox.new(false,1).set_border_width(3)
+		fr_pg3_2 = Gtk::Frame.new.set_border_width(5).set_label_widget(Gtk::Label.new.set_markup('<big><b>Alternate Skinning Weapon</b></big>'))
+		fr_pg3_2.add(vb_pg3_2)
+		vb_pg3.pack_start(fr_pg3_2,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_skin_alternate'].set_width_request(129)),false)
+		vb_pg3_2.pack_start(hb,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(Gtk::Label.new('                     Weapon:')),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_globals['skinweapon']),false)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(Gtk::Label.new('Sack:')),false)
+		hb.pack_start(gtk_globals['skinweaponsack'],false)
+		vb_pg3_2.pack_start(hb,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(Gtk::Label.new('       (?) Blunt Weapon:')),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_globals['skinweaponblunt']),false)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(Gtk::Label.new('Sack:')),false)
+		hb.pack_start(gtk_globals['skinweaponbluntsack'],false)
+		vb_pg3_2.pack_start(hb,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(Gtk::Label.new('(?) Fire Flare Weapon:')),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_globals['skinweaponfire']),false)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(Gtk::Label.new('Sack:')),false)
+		hb.pack_start(gtk_globals['skinweaponfiresack'],false)
+		vb_pg3_2.pack_start(hb,false)
+		
+		
+		#
+		# Page 3, Frame 3 - Enhancements
+		#
+		vb_pg3_3 = Gtk::VBox.new(false,1).set_border_width(3)
+		fr_pg3_3 = Gtk::Frame.new.set_border_width(5).set_label_widget(Gtk::Label.new.set_markup('<big><b>Enhancements</b></big>'))
+		fr_pg3_3.add(vb_pg3_3)
+		vb_pg3.pack_start(fr_pg3_3,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_skin_offensive'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_skin_kneel'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_skin_safe_mode'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_skin_stance_first'].set_width_request(129)),false)
+		vb_pg3_3.pack_start(hb,false)
+		
+		if (Char.prof == 'Ranger' && Char.level > 3 && Spell[604].known?)||(Spell[9704].known?)
+			hb = Gtk::HBox.new(false,1)
+			
+			if Char.prof == 'Ranger' && Char.level > 3 && Spell[604].known?
+				hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_skin_604'].set_width_request(140)),false)
+			end
+			
+			if Spell[9704].known?
+				hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_skin_sigil'].set_width_request(133)),false)
+			end
+			
+			vb_pg3_3.pack_start(hb,false)
+		end
+		
+		#
+		# Page 3, Frame 4 - Advanced Options
+		#
+		vb_pg3_4 = Gtk::VBox.new(false,1).set_border_width(3)
+		fr_pg3_4 = Gtk::Frame.new.set_border_width(5).set_label_widget(Gtk::Label.new.set_markup('<big><b>Advanced Options</b></big>'))
+		fr_pg3_4.add(vb_pg3_4)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_skin_stats'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(Gtk::Label.new('(?) Stand verb:')).set_width_request(100),false)
+		hb.pack_start(gtk_locals['skin_stand_verb'],false)
+		vb_pg3_4.pack_start(hb,false)
+		
+		vb_pg3.pack_start(fr_pg3_4,false)
+		
+		nb.append_page(vb_pg3, Gtk::Label.new('Skinning'))
+		
+		#
+		# Notebook Page 4 - Skinning
+		#
+		vb_pg4 = Gtk::VBox.new(false,1).set_border_width(3)
+		
+		#
+		# Page 4, Frame 1 - Selling
+		#
+		vb_pg4_1 = Gtk::VBox.new(false,1).set_border_width(3)
+		fr_pg4_1 = Gtk::Frame.new.set_border_width(5).set_label_widget(Gtk::Label.new.set_markup('<big><b>Selling</b></big>'))
+		fr_pg4_1.add(vb_pg4_1)
+		vb_pg4.pack_start(fr_pg4_1,false)
+		
+		lbl = Gtk::Label.new.set_markup("SLoot comes with a built in sell option that will sell all " +
+		"loot and even open boxes at the town locksmith. Use the checkboxes to set what type of loot " +
+		"you want to sell and the advanced options to customize exactly how selling operates.")
+		lbl.set_wrap(true).set_width_request(500).set_padding(0,10)
+		vb_pg4_1.pack_start(lbl,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(Gtk::Label.new('(?) Exclude List:')).set_width_request(100),false)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(gtk_locals['exclude_list'].set_width_request(418)),false)
+		vb_pg4_1.pack_start(hb,false)
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_sell_drop_items'].set_width_request(200)),false)
+		vb_pg4_1.pack_start(hb,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_sell_type_clothing'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_sell_type_gem'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_sell_type_jewelry'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_sell_type_lockpick'].set_width_request(129)),false)
+		vb_pg4_1.pack_start(hb,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_sell_type_magic'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_sell_type_reagent'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_sell_type_scroll'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_sell_type_skin'].set_width_request(129)),false)
+		vb_pg4_1.pack_start(hb,false)
+
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_sell_type_wand'].set_width_request(129)),false)
+		vb_pg4_1.pack_start(hb,false)
+		
+		#
+		# Page 4, Frame 2 - Cleanup
+		#
+		vb_pg4_2 = Gtk::VBox.new(false,1).set_border_width(3)
+		fr_pg4_2 = Gtk::Frame.new.set_border_width(5).set_label_widget(Gtk::Label.new.set_markup('<big><b>Cleanup</b></big>'))
+		fr_pg4_2.add(vb_pg4_2)
+		vb_pg4.pack_start(fr_pg4_2,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_sell_chronomage'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_sell_share_silvers'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(1,0,0,1).add(Gtk::Label.new('(?) Withdraw:')).set_width_request(100),false)
+		hb.pack_start(gtk_locals['sell_withdraw'],false)
+		vb_pg4_2.pack_start(hb,false)
+		
+		#
+		# Page 4, Frame 3 - Locksmith
+		#
+		vb_pg4_3 = Gtk::VBox.new(false,1).set_border_width(3)
+		fr_pg4_3 = Gtk::Frame.new.set_border_width(5).set_label_widget(Gtk::Label.new.set_markup('<big><b>Locksmith</b></big>'))
+		fr_pg4_3.add(vb_pg4_3)
+		vb_pg4.pack_start(fr_pg4_3,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_sell_locksmith'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_sell_wait_line'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['pause_script_boxes'].set_width_request(225)),false)
+		vb_pg4_3.pack_start(hb,false)
+
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['save_sell_boxes'].set_width_request(259)),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['empty_boxes'].set_width_request(200)),false)
+		vb_pg4_3.pack_start(hb,false)
+		
+		#
+		# Page 4, Frame 4 - Bounties
+		#
+		vb_pg4_4 = Gtk::VBox.new(false,1).set_border_width(3)
+		fr_pg4_4 = Gtk::Frame.new.set_border_width(5).set_label_widget(Gtk::Label.new.set_markup('<big><b>Bounties</b></big>'))
+		fr_pg4_4.add(vb_pg4_4)
+		vb_pg4.pack_start(fr_pg4_4,false)
+		
+		hb = Gtk::HBox.new(false,1)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_sell_stockpile'].set_width_request(129)),false)
+		hb.pack_start(Gtk::Alignment.new(0,0,0,1).add(gtk_locals['enable_sell_force_bounty_gems'].set_width_request(129)),false)
+		vb_pg4_4.pack_start(hb,false)
+		
+		nb.append_page(vb_pg4, Gtk::Label.new('Selling'))
+		
+		# Save/Close buttons
+		hb_saveclose = Gtk::HBox.new
+		save = Gtk::Button.new('_Save & Close')
+		close = Gtk::Button.new('E_xit')
+		
+		save.signal_connect('clicked') { window_action = :save }
+		close.signal_connect('clicked') { window_action = :done }
+		
+		hb_saveclose.pack_start(save,false)
+		hb_saveclose.pack_start(close,false)
+		
+		# Primary VerticalBox to split up Notebook and Save/Close buttons
+		vb_main = Gtk::VBox.new(false,5)
+		vb_main.border_width = 3
+		
+		vb_main.pack_start(nb,false)
+		vb_main.pack_start(Gtk::Alignment.new(1,0,0,0).add(hb_saveclose),false)
+		
+		window.signal_connect('delete_event') { respond window.allocation.width; window_action = :exit }
+		
+		window.add(vb_main)	
+		window.show_all
+		window.keep_above = true # On windows keep_above is required AFTER show_all
+	}
+	
+	before_dying { Gtk.queue { window.destroy } }
+	wait_while { window_action.nil? }
+	undo_before_dying # Don't ask me what this does - I stripped it from Tillmen's code
+
+	
+	clean_entry = proc { |entry|
+		entry.text = entry.text.strip
+		if entry.text.empty?
+			entry.text = nil
+		end
+		
+		entry.text
+	}
+		
+	if window_action == :save		
+		gtk_globals.each_pair { |option,widget|
+			if widget.class == Gtk::CheckButton
+				UserVars.change(option,widget.active?,:char)
+			elsif widget.class == Gtk::Entry
+				UserVars.change(option,clean_entry.call(widget),:char)
+			else
+				echo "error: unknown global widget #{option} [#{widget.class}]"
+			end
+		}
+		
+		gtk_locals.each_pair { |option,widget|
+			if widget.class == Gtk::CheckButton
+				settings[option] = widget.active?
+			elsif widget.class == Gtk::Entry
+				settings[option] = clean_entry.call(widget)
+			else
+				echo "error: unknown local widget #{option} [#{widget.class}]"
+			end
+		}
+		
+		echo 'settings saved'
+    Gtk.queue { window.destroy }
+	else
+		echo 'closed without saving'
+	  Gtk.queue { window.destroy }
+  end
+}
+
+# Installs hooks that sloot uses to function. Will only install a hook 
+# once in order to increase performance.
+install_hooks = proc { |type|
+	if settings['enable_disking']
+		next if $sloot_hooks.include?(:disk)
+		$sloot_hooks.push(:disk)
+
+		hook = proc { |server_string|
+
+			if server_string =~ /from in the <a exist="(?:\d+)" noun="disk">.*#{Char.name} disk<\/a>|You give your disk a flip/
+				$sloot_has_disk = true
+				$sloot_disk_full = false
+			elsif server_string =~ /#{Char.name} disk in a dismissing gesture./
+				$sloot_has_disk = false
+				$sloot_disk_full = false
+			elsif server_string =~ /^Your <a exist=".*" noun="disk">disk<\/a> arrives|^A small circular container suddenly appears/
+				$sloot_has_disk = true
+			elsif server_string =~ /^.*Your .* won't fit in the .*disk.*$/
+				$sloot_has_disk = true
+				$sloot_disk_full = true
+			end
+			
+			server_string
+		}
+		
+		DownstreamHook.add('SLootDisk', hook)
+	elsif $sloot_hooks.include?(:disk)
+		DownstreamHook.remove('SLootDisk')
+	end
+}
+
+# Gets a sack based on type
+get_sack_from_type = proc { |type|
+	if found_sacks.keys.include?(type)
+		sack = found_sacks[type]
+	else
+		sack = GameObj[UserVars.send(UNTRUSTED_UNTAINT.call("#{type}sack"))]
+	end
+	
+	unless sack
+		echo "could not locate your #{type}sack: got #{sack.inspect}"
+		sack = nil
+	else
+		found_sacks[type] = sack
+	end
+	
+	sack
+}
+
+# Get dem silvers
+checksilvers = proc {
+	silvers = nil
+	action = proc { |server_string|
+		if server_string =~ /^\s*Name\:|^\s*Gender\:|^\s*Normal \(Bonus\)|^\s*Strength \(STR\)\:|^\s*Constitution \(CON\)\:|^\s*Dexterity \(DEX\)\:|^\s*Agility \(AGI\)\:|^\s*Discipline \(DIS\)\:|^\s*Aura \(AUR\)\:|^\s*Logic \(LOG\)\:|^\s*Intuition \(INT\)\:|^\s*Wisdom \(WIS\)\:|^\s*Influence \(INF\)\:/
+			nil
+		elsif server_string =~ /^\s*Mana\:\s+\-?[0-9]+\s+Silver\:\s+([0-9]+)/
+			silvers = $1.to_i
+			DownstreamHook.remove("slib_check_silvers")
+			nil
+		else
+			server_string
+		end
+	}
+	DownstreamHook.add("slib_check_silvers", action)
+	$_SERVER_.puts "#{$cmd_prefix}info\n"
+	wait_until { silvers }
+	silvers
+}
+
+# Deposits coins in the bank
+deposit_coins = proc {
+	silvers = checksilvers.call.to_i
+	withdraw = settings['sell_withdraw'].to_i
+	
+	if (silvers == 0 && withdraw == 0) || silvers == withdraw
+		next
+	end
+	
+	go2.call('bank')
+	
+	if settings['enable_sell_share_silvers'] and silvers > 1
+		dothistimeout "share all", 5, /In order to share|share/
+	end
+	res = dothistimeout "deposit all", 5, /The teller carefully records the transaction|^You have no coins to deposit\.$/
+		
+	if (withdraw > 0)
+		dothistimeout "withdraw #{withdraw} silvers", 5, /^The teller carefully records the transaction, and then hands you \d+ silvers\.$/
+	end
+}
+
+# Waits until your disk is present or a timeout occurs
+check_for_disk = proc {
+	disk = nil
+	notified = false
+	25.times { 
+		break if disk = GameObj[/^.*#{Char.name} disk$/]
+		sleep 0.2
+		unless notified
+			msg.call("SLoot: waiting on your disk to arrive",:all)
+			notified = true
+		end
+	}
+	
+	unless disk
+		$sloot_has_disk = false
+	end
+	
+	disk
+}
+
+# Opens up a sack and keeps a record of it
+open_sack = proc { |sack|
+	unless sack.class == GameObj || sack = GameObj[sack]
+		echo "fixme: open_sack failed to find #{sack}"
+		exit
+	end
+	
+	res = dothistimeout "open ##{sack.id}", 5, /^You open .*\.$|^You reach down and lift the .* on .*, opening it\.$/
+	unless res
+		echo "fixme: unknown open_sack result: #{res}"
+		exit
+	end
+	closed_sacks.push(sack.id)
+}
+
+# Closes all opened sacks in closed_sacks
+close_open_sacks = proc {
+	next unless settings['enable_close_sacks']
+	
+	closed_sacks.each { |sack|
+		if $sloot_has_disk==true
+			check_for_disk.call
+		end
+		res = dothistimeout "close ##{sack}", 5, /^You close .*\.$|^You reach down and place the .* on .* over .*, closing it\.$/
+		unless res
+			echo "fixme: unknown close_open_sacks result: #{res}"
+			exit
+		end
+	}
+}
+
+put_item_overflow = proc { |item,sack|
+	left_hand = GameObj.left_hand
+	right_hand = GameObj.right_hand
+	
+	next nil unless right_hand == item || left_hand == item || checkleft =~ /#{item}/ || checkright =~ /#{item}/ || right_hand.name == item || left_hand.name == item || item == UserVars.skinweapon || item == UserVars.skinweaponblunt || item == UserVars.skinweaponfire
+
+	if item.class != GameObj && item.strip =~ /^\-?\d+$/
+		item = "#{item}"
+	elsif item == right_hand.name || item == right_hand || item == right_hand.noun
+		item = right_hand
+	elsif item == left_hand.name || item == left_hand || item == left_hand.noun
+		item = left_hand
+	end
+	
+	sacksave = sack
+	if sack.class == GameObj || sack = GameObj[sack]
+		line = "put ##{item.id} in ##{sack.id}"
+	else
+		if sack.nil? || sack == ""
+			sack = sacksave
+		end
+		line = "put ##{item.id} in #{sack}"
+	end
+	res = dothistimeout line, 5, /^You put .* in .*\.$|^I could not find what you were referring to\.$|^You can't put your .* in the .*\.  It's closed\!$|^Your? .* won't fit in .*\.$|^You sling .* over your shoulder\.$|^As you place an|^You slip your hand to the .* and stow your .* out of sight\.$|^You shift the focus of your voice and your .* moves from your .* hand to your shoulder\.$|^You sheathe the .* into one of the open slots on your .*\.$|^You hang the .* from one of the straps on your .*\.$|^You .* drop .* into .*\.$|^You slide .* protruding from .*, making certain that it can be easily readied when necessary\.$|^You carefully place .* inside your .*, making sure not to damage the .*\.$|^You wipe off .* and sheathe .* into one .* along the side of your .*\.$|You slip .* into one of the slots on your .*\.$/
+	case res
+		when /^You put .* in .*\.$|^As you place an|^You sling .* over your shoulder\|^You slip your hand to the .* and stow your .* out of sight\.$|^You shift the focus of your voice and your .* moves from your .* hand to your shoulder\.$|^You sheathe the .* into one of the open slots on your .*\.$|^You hang the .* from one of the straps on your .*\.$|^You .* drop .* into .*\.$|^You slide .* protruding from .*, making certain that it can be easily readied when necessary\.$|^You carefully place .* inside your .*, making sure not to damage the .*\.$|^You wipe off .* and sheathe .* into one .* along the side of your .*\.$|You slip .* into one of the slots on your .*\.$/
+		when /not set|could not|^I could not find what you were referring to\.$/,false,nil
+			res = nil
+		when /^You can't put (.*) in (.*)\.  It's closed\!$/
+			open_sack.call(sack)
+			put_item_overflow.call(item,sack)
+		when /^Your? .* won't fit in .*\.$/
+	end
+	
+	res
+}
+
+# Puts an item somewhere
+put_item = proc { |item,sack|
+	left_hand = GameObj.left_hand
+	right_hand = GameObj.right_hand
+	
+	next nil unless right_hand == item || left_hand == item || checkleft =~ /#{item}/ || checkright =~ /#{item}/ || right_hand.name == item || left_hand.name == item || item == UserVars.skinweapon || item == UserVars.skinweaponblunt || item == UserVars.skinweaponfire
+
+	if item.class != GameObj && item.strip =~ /^\-?\d+$/
+		item = "#{item}"
+	elsif item == right_hand.name || item == right_hand || item == right_hand.noun
+		item = right_hand
+	elsif item == left_hand.name || item == left_hand || item == left_hand.noun
+		item = left_hand
+	end
+	
+	sacksave = sack
+	if sack.class == GameObj || sack = GameObj[sack]
+		line = "put ##{item.id} in ##{sack.id}"
+	else
+		if sack.nil? || sack == ""
+			sack = sacksave
+		end
+		line = "put ##{item.id} in #{sack}"
+	end
+		
+	res = dothistimeout line, 5, /^You put .* in .*\.$|^I could not find what you were referring to\.$|^You can't put your .* in the .*\.  It's closed\!$|^Your? .* won't fit in .*\.$|^You sling .* over your shoulder\.$|^As you place an|^You slip your hand to the .* and stow your .* out of sight\.$|^You shift the focus of your voice and your .* moves from your .* hand to your shoulder\.$|^You sheathe the .* into one of the open slots on your .*\.$|^You hang the .* from one of the straps on your .*\.$|^You .* drop .* into .*\.$|^You slide .* protruding from .*, making certain that it can be easily readied when necessary\.$|you feel pleased with yourself at having cleaned up the surrounding area|^You carefully place .* inside your .*, making sure not to damage the .*\.$|^You wipe off .* and sheathe .* into one .* along the side of your .*\.$|You slip .* into one of the slots on your .*\.$/
+	case res
+		when /^You put .* in .*\.$|^As you place an|^You sling .* over your shoulder\|^You slip your hand to the .* and stow your .* out of sight\.$|^You shift the focus of your voice and your .* moves from your .* hand to your shoulder\.$|^You sheathe the .* into one of the open slots on your .*\.$|^You hang the .* from one of the straps on your .*\.$|^You .* drop .* into .*\.$|^You slide .* protruding from .*, making certain that it can be easily readied when necessary\.$|you feel pleased with yourself at having cleaned up the surrounding area|^You carefully place .* inside your .*, making sure not to damage the .*\.$|^You wipe off .* and sheathe .* into one .* along the side of your .*\.$|You slip .* into one of the slots on your .*\.$/
+		when /not set|could not|^I could not find what you were referring to\.$/,false,nil
+			res = nil
+		when /^You can't put (.*) in (.*)\.  It's closed\!$/
+			open_sack.call(sack)
+			put_item.call(item,sack)
+		when /^Your? .* won't fit in .*\.$/
+			if sack.noun==(get_sack_from_type.call(item.type)).noun
+				settings['overflowsack'].split(',').each { |overflow|
+					put_item_overflow.call(item,overflow)
+				}
+				if (righthand? == "#{item}" || lefthand? == "#{item}")
+					fput "drop #{item}"
+				end
+			else
+				put_item.call(item,(get_sack_from_type.call(item.type)))
+			end
+	end
+	
+	res
+}
+
+# Gets an item
+get_item = proc { |item,sack|
+	left_hand = GameObj.left_hand
+	right_hand = GameObj.right_hand
+	
+	next nil if right_hand.id == item || left_hand.id == item || checkleft =~ /#{item}/ || checkright =~ /#{item}/
+	
+	if item.class != GameObj && item.strip =~ /^\-?\d+$/
+		item = "##{item}"
+	end
+	
+	if sack.class == GameObj || inv_sack = GameObj[sack]
+		sack = inv_sack unless sack.class == GameObj
+		line = "get #{item} from ##{sack.id}"
+	elsif sack.nil?
+		if item =~ /1|2|3|4|5|6|7|8|9|0/
+			line = "get #{item}"
+		else
+			line = "get ##{item.id}"
+		end
+	else
+		line = "get #{item} from #{sack}"
+	end
+	res = dothistimeout line, 5, /^Get what\?$|^You pick up .*\.$|^You remove .* from (?:in|on) .*\.$|You gather the remaining|^You slip a hand to the .*, deftly retrieving your .*\.$|^You quickly remove .* protruding from .*, brandishing it high for all to see\.$|You unsheathe .* from one .* along the side of your .*\.$|^You carefully remove .* from inside your .*, making sure not to damage .*\.$|^You grab .* from inside your .*\.$|You draw .*from one of the slots on your .*\./i
+	case res
+		when /^You pick up .*\.$|^You remove .* from (?:in|on) .*\.$|^You slip a hand to the .*, deftly retrieving your .*\.|^You quickly remove .* protruding from .*, brandishing it high for all to see\.$|You unsheathe .* from one .* along the side of your .*\.$|^You carefully remove .* from inside your .*, making sure not to damage .*\.$|^You grab .* from inside your .*\.$|You draw .*from one of the slots on your .*\./
+		when /^Get what\?$/
+			res = nil
+		else
+			echo "fixme: unknown get_item result: #{res.inspect}"
+			res = nil
+	end
+	
+	res	
+}
+
+# Withdraws coins from the bank, hooray!
+withdraw_coins = proc { |amount|
+	success = true
+	room = Room.current.id
+	
+	coins = checksilvers.call
+	if coins < amount
+		go2.call('bank')
+		
+		dothistimeout "unhide", 5, /hiding|visible/ if invisible? or hiding?
+		res = dothistimeout "withdraw #{amount-coins} silvers", 5, /^The teller carefully records the transaction, and then hands you \d+ silvers?\.$|I'm sorry, .*, you don't seem to have that much in the account\./
+		case res
+			when /I'm sorry/
+				success = false
+			when /^The teller carefully/
+			else
+				echo "unknown response for withdraw_coins: #{res}"
+		end
+	end
+	
+	go2.call(room)
+	
+	success
+}
+
+# Grabs loot!
+grab_loot = proc { |loot,from|
+	type = loot.type.split(',').first
+	if type =~ /one-hand edged|one-hand blunt|one-hand polearm|two-hand polearm|ranged|twohanded weapons|brawling|thrown|shield|accessories|armor|weapon/
+		type = "uncommon"
+	end
+
+	if type == "box"
+		disk = nil
+		
+		# Disk boxes if we can
+		if settings['enable_disking'] && $sloot_has_disk && !$sloot_disk_full
+			unless disk = check_for_disk.call
+				msg.call("I can't seem to find your disk",:all)
+				$sloot_has_disk = false
+				
+				if Char.prof == 'Wizard' && Spell[511].known? && Char.level > 10
+					msg.call("Hooray! You're a Weezard!",:all)
+					
+					if Spell[511]
+						Spell[511].cast
+						disk = check_for_disk.call
+					else
+						msg.call("No mana, aborting.",:all)
+					end
+				end
+			end
+		end
+	end
+	
+	unless sack = get_sack_from_type.call(type)
+		msg.call("unable to find sack for \"#{loot.name}\" with type \"#{loot.type}\"",:all)
+		next
+	end
+	
+	unless get_item.call(loot,from)
+		msg.call("failed to get item \"#{loot.name}\" from \"#{sack.name}\"",:all)
+	else
+		if disk and put_item.call(loot,disk)
+			next
+		end
+		
+		if type == "box"
+			# Phasing for those Demon lovers
+			if !disk && settings['enable_phasing'] && Spell[704].known? && Spell[704].affordable? && Char.level > 3 && loot.name !~ /mithril|enruned/
+				right_hand = true
+				right_hand = false if GameObj.left_hand.id == loot.id
+
+				dothistimeout "prep 704", 5, /Phase/
+				res = dothistimeout "cast ##{loot.id}", 5, /somewhat insubstantial|flickers in and out|becomes momentarily|resists the effects/
+				
+				# Phased items get a different id so refresh the loot GameObj
+				if res =~ /becomes momentarily/
+					if right_hand
+						wait_while { GameObj.right_hand.noun.nil? }
+						loot = GameObj.right_hand
+					else
+						wait_while { GameObj.left_hand.noun.nil? }
+						loot = GameObj.left_hand
+					end
+				end
+			end
+		end
+			
+		unless put_item.call(loot,sack)
+			msg.call("failed to put item \"#{loot.name}\" in sack \"#{sack.name}\"",:all)
+			fput "drop ##{loot.id}"
+		end
+	end
+}
+
+# Frees up the loot hand
+free_hand = proc {
+	if !settings['enable_stow_left'] && !settings['enable_stow_right']
+		next if !checkright || !checkleft
+	elsif settings['enable_stow_left'] && stored_left_hand == true || settings['enable_stow_right'] && stored_right_hand == true
+		next
+	elsif !checkright && !checkleft
+		next
+	end
+	next if !checkright && settings['enable_stow_right'] && !settings['enable_stow_left']
+	next if !checkleft && settings['enable_stow_left'] && !settings['enable_stow_right']
+		
+	stored_hand = nil
+	if checkleft && !settings['enable_stow_right']
+		stored_item = GameObj.left_hand
+		stored_hand = 'left'
+		stored_left_hand = true
+	elsif checkleft && settings['enable_stow_left']
+		stored_item = GameObj.left_hand
+		stored_hand = 'left'
+		stored_left_hand = true
+	elsif checkright && !settings['enable_stow_left']
+		stored_item = GameObj.right_hand
+		stored_hand = 'right'
+		stored_right_hand = true
+	elsif checkright && settings['enable_stow_right']
+		stored_item = GameObj.right_hand
+		stored_hand = 'right'
+		stored_right_hand = true
+	else
+		echo 'fixme: invalid condition for free_hand'
+		exit
+	end
+
+	res = dothistimeout "store #{stored_hand}", 5, /^You can't put your .* in the .*\.  It's closed\!$|^You aren't holding any bundles of ammo in your hands\.$|^You put .* in your .*\.$|^You sling .* over your shoulder\.$|^You shift the focus of your voice and your .* moves from your .* hand to your shoulder\.$|^You sheathe the .* into one of the open slots on your .*\.$|You hang the .* from one of the straps on your .*\.$|You slip your hand to the .* and stow your .* out of sight\.$|^You wipe off .* into one .* along the side of your .*\.$|You slip .* into one of the slots on your .*\.$/
+	case res
+		when nil, /^You aren't holding any bundles of ammo in your hands\.$/
+			res = dothistimeout "stow ##{stored_item.id}", 5, /^You put .*\.$|^You can't put your .* in the .*\.  It's closed\!$/
+			
+			if res =~ /^You can't put your .* in the (.*)\.  It's closed\!$/
+				open_sack.call($1.strip)
+				next free_hand.call
+			end
+		when /It's closed\!$/
+			if res =~ /^You can't put your .* in the (.*)\.  It's closed\!$/
+				open_sack.call($1.strip)
+				next free_hand.call
+			end
+		when /^You put .* in your .*\.$|^You sling .* over your shoulder\.$|^You shift the focus of your voice and your .* moves from your .* hand to your shoulder\.$|^You sheathe the .* into one of the open slots on your .*\.$|You hang the .* from one of the straps on your .*\.$|You slip your hand to the .* and stow your .* out of sight\.$|^You wipe off .* into one .* along the side of your .*\.$|You slip .* into one of the slots on your .*\.$/
+		else
+			echo "fixme: unknown result for free_hand: #{res}"
+			exit
+	end
+	
+	stored_result = res
+}
+
+free_hand2 = proc {
+	if !settings['enable_stow_left'] && !settings['enable_stow_right']
+		next if !checkright || !checkleft
+	elsif !checkright && !checkleft
+		next
+	end
+	next if !checkright && settings['enable_stow_right'] && !settings['enable_stow_left']
+	next if !checkleft && settings['enable_stow_left'] && !settings['enable_stow_right']
+	next if !checkright && settings['enable_stow_right'] && stored_right_hand == true
+		
+	stored_hand2 = nil
+	if checkright && !settings['enable_stow_left']
+		stored_item2 = GameObj.right_hand
+		stored_hand2 = 'right'
+		stored_right_hand = true
+	elsif checkright && settings['enable_stow_right']
+		stored_item2 = GameObj.right_hand
+		stored_hand2 = 'right'
+		stored_right_hand = true
+	elsif checkleft && !settings['enable_stow_right']
+		stored_item2 = GameObj.left_hand
+		stored_hand2 = 'left'
+		stored_left_hand = true
+	elsif checkleft && settings['enable_stow_left']
+		stored_item2 = GameObj.left_hand
+		stored_hand2 = 'left'
+		stored_left_hand = true
+	else
+		echo 'fixme: invalid condition for free_hand'
+		exit
+	end
+
+	res = dothistimeout "store #{stored_hand2}", 5, /^You can't put your .* in the .*\.  It's closed\!$|^You aren't holding any bundles of ammo in your hands\.$|^You put .* in your .*\.$|^You sling .* over your shoulder\.$|^You shift the focus of your voice and your .* moves from your .* hand to your shoulder\.$|^You sheathe the .* into one of the open slots on your .*\.$|You hang the .* from one of the straps on your .*\.$|You slip your hand to the .* and stow your .* out of sight\.$|^You wipe off .* into one .* along the side of your .*\.$|You slip .* into one of the slots on your .*\.$/
+	case res
+		when nil, /^You aren't holding any bundles of ammo in your hands\.$/
+			res = dothistimeout "stow ##{stored_item2.id}", 5, /^You put .*\.$|^You can't put your .* in the .*\.  It's closed\!$/
+			
+			if res =~ /^You can't put your .* in the (.*)\.  It's closed\!$/
+				open_sack.call($1.strip)
+				next free_hand2.call
+			end
+		when /It's closed\!$/
+			if res =~ /^You can't put your .* in the (.*)\.  It's closed\!$/
+				open_sack.call($1.strip)
+				next free_hand2.call
+			end
+		when /^You put .* in your .*\.$|^You sling .* over your shoulder\.$|^You shift the focus of your voice and your .* moves from your .* hand to your shoulder\.$|^You sheathe the .* into one of the open slots on your .*\.$|You hang the .* from one of the straps on your .*\.$|You slip your hand to the .* and stow your .* out of sight\.$|^You wipe off .* into one .* along the side of your .*\.$|You slip .* into one of the slots on your .*\.$/
+		else
+			echo "fixme: unknown result for free_hand: #{res}"
+			exit
+	end
+	
+	stored_result2 = res
+}
+
+# Loots a single GameObj or an array of GameObjs
+loot_it = proc { |array,exclude|
+	next if array.nil?
+	unless array.class == Array
+		array = [ array ]
+	end
+	
+	array.each { |loot|
+		# Skip over any loot that is in the exclude array
+		if loot.type == "clothing"
+			fput "look in ##{loot.id}"
+			loot_it.call(loot.contents,nil)
+		end
+		if loot.type == "ammo,uncommon"
+			next
+		end
+		if loot.name =~ /((dark|grey|ink black|large|sooty|stained) (black|blue|brocade|cloth|cotton|green|leather|oilcloth|orange|yellow) (bag|pouch|sack))|((burlap|canvas|dirt-covered|ratty|stained) (bag|pouch|sack))/
+			next
+		end
+		if exclude.include?(loot.id)
+			exclude.delete(loot.id)
+			next
+		end
+		# Make sure that the loot type is something we want to pickup
+		if loot.type.split(',').any? { |type| settings["enable_loot_#{type}"] }
+				if locksmithing == false
+					free_hand.call
+				end
+				grab_loot.call(loot,nil)
+		elsif loot.name == 'some silver coins'
+			dothistimeout "get ##{loot.id}", 5, /^You gather the remaining \d+ coins from inside your .*\.$|^You gather the remaining/
+		else			
+			# Log all missed loot to addd to gameobj-data.xml
+			write_log.call("skipped #{loot.name}") if loot.type.nil?
+		end
+	}
+}
+
+# Checks a bundle for ammo type
+check_bundle = proc { |id|
+	ammo_name = settings['ammo_name'].strip
+	result = nil
+	
+	action = proc { |server_string|
+		line = server_string
+		if server_string =~ /Individual projectiles from this bundle will have a (?:show|long) of "(.*)"|Each individual projectile will be "(.*)"/
+			name_long = $1
+			name_short = $2
+			
+			if name_long =~ /.*#{ammo_name}/ || name_short =~ /.*#{ammo_name}/
+				result = server_string
+			end
+			nil
+		elsif server_string =~ /^You carefully count|Individual/
+			nil
+		elsif server_string.strip.empty?
+			nil
+		elsif server_string =~ /<prompt time=/
+			result = false if result.nil?
+			DownstreamHook.remove("sloot_check_bundle")
+			nil
+		else
+			server_string
+		end
+	}
+	
+	DownstreamHook.add("sloot_check_bundle", action)
+	$_SERVER_.puts "#{$cmd_prefix}look at ##{id}\n"
+	wait_while { result.nil? }
+	
+	result
+}
+
+# Get ammo from room description
+get_ammo = proc {
+	ammo_name = settings['ammo_name'].strip
+	ammo_ids = [ ]
+	
+	items = $_SERVERBUFFER_.reverse.find { |line| line =~ /<(?:compDef|component) id='room objs'/ }.gsub(/<pushBold\/>|<popBold\/>|<b>|<\/b>/,'').scan(/(?:a |an |some |the ).*?<\/a>.*?(?=, | and |\.)/)
+	items.each { |i|
+		if i =~ /<a exist="(\d+)" noun="(?:arrow|bolt|dart)">.*(?:arrow|bolt|dart)<\/a>/
+			id = $1
+			
+			if i.gsub(/(?:\b(?:a|an)\b\s|<a.*">|<\/a>)/,'') =~/#{ammo_name}/
+				ammo_ids.push(id)
+			end
+		elsif i =~ /<a exist="(\d+)" noun="(?:arrow|bolt|dart)s">bundle of.*(?:arrow|bolt|dart)s<\/a>/
+			id = $1
+
+			unless invalid_ammo.include?(id)
+				if check_bundle.call(id) =~ /#{ammo_name}/
+					ammo_ids.push(id)
+				else
+					invalid_ammo.push(id)
+				end
+			end
+		end
+	}
+
+	ammo_ids
+}
+
+# Gathers ammunition
+gather_ammo = proc {
+	next unless settings['enable_gather']
+	ammo_name = settings['ammo_name'].strip
+	sack = UserVars.ammosack
+	
+	if ammo_name.nil? or ammo_name.empty?
+		echo "failed to gather: you must specify the ammo name to use this feature"
+		next
+	end
+	
+	if ammo_name =~ /\b(arrow|bolt|dart)\b/
+		ammo_noun = $1
+	else
+		echo "failed to gather: invalid ammo type specified (use the full name)"
+	end
+	
+	if sack.nil? or sack.empty?
+		echo "failed to gather: you must specify an ammo container to use this feature"
+		next
+	end
+	
+	# Attempt to gather arrows first
+	ammo_ids = get_ammo.call
+	unless ammo_ids.empty? || !GameObj.loot.find { |l| l.name =~ /#{ammo_noun}/ }
+		empty_hand
+
+		result = dothistimeout "gather #{ammo_noun}", 5, /^You gather|^You pick up|^I could not|^What were you|^You may only|reach/
+		if result =~ /^You gather .* into a bundle on the ground\.$/
+			get_item.call(GameObj.loot.find { |l| l.noun =~ /(?:arrow|bolt|dart)s?/ },nil)
+		end
+			
+		if result =~ /^You gather|^You pick up/ && hand = [ GameObj.right_hand, GameObj.left_hand ].find { |i| i.noun =~ /(?:arrow|bolt|dart)/ }
+			fput "look at ##{hand.id}" if hand.noun =~ /(?:arrow|bolt|dart)/
+			if result =~ /#{ammo_name}/ || $_SERVERBUFFER_.reverse.find { |line| line =~ /Individual projectiles from this bundle will have a (?:long|show) of "(?:a|an) #{ammo_name}"/ }
+				dothistimeout "put my #{hand.noun} in my #{hand.noun} in my #{sack}", 5, /^I could not find|^You can't seem to|^You add|^You bundle|You cannot bundle/
+				put_item.call(hand,sack) if [checkleft,checkright].include?(hand.noun)
+			else
+				fput "drop ##{hand.id}"
+			end
+		end
+	end
+	
+	# Loop through remaining arrow ids and store manually
+	ammo_ids = get_ammo.call
+	unless ammo_ids.empty?
+		empty_hand
+		
+		ammo_ids.each { |i|
+			get_item.call(i,nil)
+			
+			if hand = [ GameObj.right_hand, GameObj.left_hand ].find { |i| i.noun =~ /(?:arrow|bolt|dart)/ }
+				dothistimeout "put my #{hand.noun} in my #{hand.noun} in my #{sack}", 5, /^I could not find|^You can't seem to|^You add|^You bundle|You cannot bundle/
+				put_item.call(hand,sack) if [checkleft,checkright].include?(hand.noun)
+			end
+		}
+	end
+	
+	fill_hand
+}
+
+sell_boxes = proc {
+	unless boxsack = GameObj[UserVars.boxsack]
+		msg.call('SLoot: failed to find boxsack', :all)
+		next
+	end
+
+	unless boxsack.contents
+		res = dothistimeout "look in ##{boxsack.id}", 5, /In the .*?|^That is closed|you see .*?|There is nothing in there/
+		case res
+			when /In the .*?|you see .*?/
+				res = nil
+				unless boxsack.contents
+					echo "failed to find contents of sack: #{boxsack.name}"
+				end
+			when /^That is closed/
+				open_sack.call(boxsack)
+				unless boxsack.contents
+					echo "failed to find contents of sack: #{boxsack.name}"
+				end
+			when /There is nothing in there/
+				res = nil
+		end
+	end
+	
+	boxes = boxsack.contents.find_all { |o| o.type.include?('box') }
+	
+	if settings['enable_disking'] && $sloot_has_disk
+		unless disk = GameObj[/^.*#{Char.name} disk$/]
+			unless disk = check_for_disk.call
+				msg.call("failed to find a disk",:all)
+			end
+		end
+		
+		if disk
+			unless disk.contents
+				res = dothistimeout "look in ##{disk.id}", 5, /In the .*?|^That is closed|you see .*?|There is nothing in there/
+				case res
+					when /In the .*?|you see .*?/
+						res = nil
+						unless disk.contents
+							echo "failed to find contents of sack: #{disk.name}"
+							next
+						end
+					when /^That is closed/
+						open_sack.call(disk)
+						dothistimeout "look in ##{disk.id}", 5, /In the .*?|^That is closed|you see .*?|There is nothing in there./
+						unless disk.contents
+							echo "failed to find contents of sack: #{disk.name}"
+							next
+						end
+					when /There is nothing in there/
+						res = nil
+				end
+			end
+			
+			boxes += disk.contents.find_all { |o| o.type.include?('box') }.to_a if disk.contents
+		end
+	end
+	
+	settings['overflowsack'].split(',').each { |sack|
+		if found_boxsacks = GameObj[sack]
+			next if (found_boxsacks == boxsack || found_boxsacks == disk)
+			boxsacks.push(found_boxsacks) unless boxsacks.include?(found_boxsacks)
+		end
+	}
+	
+	boxsacks.each { |sack|
+		unless sack.contents
+			res = dothistimeout "look in ##{sack.id}", 3, /In the .*?|^That is closed|you see .*?|There is nothing in there/
+			case res
+				when /In the .*?|you see .*?/
+					res = nil
+					unless sack.contents
+						echo "failed to find contents of sack: #{sack.name}"
+						next
+					end
+				when /^That is closed/
+					open_sack.call(sack)
+					unless sack.contents
+						echo "failed to find contents of sack: #{sack.name}"
+						next
+					end
+				when /There is nothing in there/
+					res = nil
+				end
+			end
+			
+			boxes += sack.contents.find_all { |o| o.type.include?('box') }.to_a if sack.contents
+	}
+		
+	if boxes.size != 0
+		go2.call('pawnshop')
+		
+		sell_boxes_at_pawnshop = proc { |box|
+			get_item.call(box,nil)
+			dothistimeout "sell ##{box.id}", 5, /ask|offer/
+		}
+		
+		boxes.each { |b| sell_boxes_at_pawnshop.call(b) }
+	end
+}
+
+# Locksmithing routine
+locksmith = proc {
+	locksmithing = true
+	unless boxsack = GameObj[UserVars.boxsack]
+		msg.call('SLoot: failed to find boxsack', :all)
+		next
+	end
+
+	unless boxsack.contents
+		res = dothistimeout "look in ##{boxsack.id}", 5, /In the .*?|^That is closed|you see .*?|There is nothing in there/
+		case res
+			when /In the .*?|you see .*?/
+				res = nil
+				unless boxsack.contents
+					echo "failed to find contents of sack: #{boxsack.name}"
+				end
+			when /^That is closed/
+				open_sack.call(boxsack)
+				unless boxsack.contents
+					echo "failed to find contents of sack: #{boxsack.name}"
+				end
+			when /There is nothing in there/
+				res = nil
+		end
+	end
+	
+	boxes = boxsack.contents.find_all { |o| o.type.include?('box') }
+	
+	if settings['enable_disking'] && $sloot_has_disk
+		unless disk = GameObj[/^.*#{Char.name} disk$/]
+			unless disk = check_for_disk.call
+				msg.call("failed to find a disk",:all)
+			end
+		end
+		
+		if disk
+			unless disk.contents
+				res = dothistimeout "look in ##{disk.id}", 5, /In the .*?|^That is closed|you see .*?|There is nothing in there/
+				case res
+					when /In the .*?|you see .*?/
+						res = nil
+						unless disk.contents
+							echo "failed to find contents of sack: #{disk.name}"
+							next
+						end
+					when /^That is closed/
+						open_sack.call(disk)
+						dothistimeout "look in ##{disk.id}", 5, /In the .*?|^That is closed|you see .*?|There is nothing in there./
+						unless disk.contents
+							echo "failed to find contents of sack: #{disk.name}"
+							next
+						end
+					when /There is nothing in there/
+						res = nil
+				end
+			end
+			
+			boxes += disk.contents.find_all { |o| o.type.include?('box') }.to_a if disk.contents
+		end
+	end
+	
+	settings['overflowsack'].split(',').each { |sack|
+		if found_boxsacks = GameObj[sack]
+			next if (found_boxsacks == boxsack || found_boxsacks == disk)
+			boxsacks.push(found_boxsacks) unless boxsacks.include?(found_boxsacks)
+		end
+	}
+	
+	boxsacks.each { |sack|
+		unless sack.contents
+			res = dothistimeout "look in ##{sack.id}", 3, /In the .*?|^That is closed|you see .*?|There is nothing in there/
+			case res
+				when /In the .*?|you see .*?/
+					res = nil
+					unless sack.contents
+						echo "failed to find contents of sack: #{sack.name}"
+						next
+					end
+				when /^That is closed/
+					open_sack.call(sack)
+					unless sack.contents
+						echo "failed to find contents of sack: #{sack.name}"
+						next
+					end
+				when /There is nothing in there/
+					res = nil
+				end
+			end
+			
+			boxes += sack.contents.find_all { |o| o.type.include?('box') }.to_a if sack.contents
+	}
+
+	if boxes.size != 0
+		empty_hands
+		withdraw_coins.call(10000)
+		go2.call('locksmith')
+				
+		unless trash = GameObj[/crate|barrel|wastebarrel|casket/]
+			msg.call('unable to locate trash',:all)
+		end
+		
+		unless table = GameObj[/table|counter/]
+			msg.call('unable to find table',:all)
+			next
+		end
+		
+		unless table.contents
+			dothistimeout "look on ##{table.id}", 5, /On the .*? you see/
+			
+			unless table.contents
+				msg.call("failed to find contents of #{table.name}",:all)
+				next
+			end
+		end
+		
+		unless activator = table.contents.find { |o| o.noun =~ /bell|keys|chime/ }
+			msg.call('unable to find activator',:all)
+		end
+		
+		case activator.noun
+			when /bell|chime/
+				activator = "ring #{activator.noun}"
+			when /keys/
+				activator = 'pull keys'
+		end
+		
+		if settings['enable_sell_wait_line']
+			max_wait = Time.now + 120
+			after = table.contents.collect { |obj| obj.id }
+			while checkpcs
+				before = after.dup
+				100.times {
+					sleep 0.2
+					break unless checkpcs
+					after = table.contents.collect { |obj| obj.id }
+					break if before != after
+				}
+				break if (before == after) or (Time.now > max_wait)
+			end
+		end
+		
+		open_box = proc { |box|	
+			if disk && !GameObj[disk.name]
+				msg.call("waiting on your disk to arrive",:all)
+			end
+			wait_until { GameObj[disk.name] } if disk
+		
+			get_item.call(box,nil)
+			res = dothistimeout "put ##{box.id} on ##{table.id}", 5, /^You put|^You should really/
+			
+			# Phasing for those Sorcerer types (evil bastards!)
+			if res =~ /^You should really/
+				dothistimeout "drop ##{box.id}", 5, /flickers in and out of existence/
+				dothistimeout "get ##{box.id}", 5, /^You pick up .*\.$/
+				put_item.call(box,table.id)
+			end
+			
+			dothistimeout activator, 5, /but it'll cost|so he can look at it/
+			# fixme: check result
+			res = dothistimeout "pay", 5, /accepts|have enough/
+			if res =~ /have enough/
+				loot_it.call(box,nil)
+				withdraw_coins.call(10000)
+				next open_box.call(box)
+			end
+			
+			get_item.call(box,nil)
+			
+			dothistimeout "open ##{box.id}", 5, /open/				
+			unless box.contents
+				dothistimeout "look in ##{box.id}", 5, /^In the/
+				
+				unless box.contents 
+					msg.call("failed to see contents of #{box.name}",:all)
+					loot_it.call(box,nil)
+					next
+				end
+			end
+			
+			loot_it.call(box.contents,nil)
+			if settings['empty_boxes'] && !box.contents.empty?
+				fput "empty ##{box.id} in my #{UserVars.stowsack}"
+				if !box.contents.empty?
+					settings['overflowsack'].split(',').each { |overflow|
+						if !box.contents.empty?
+							fput "empty ##{box.id} in my #{overflow}"
+						end
+					}
+				end
+			end
+			if settings['save_sell_boxes'] && box.name =~ /silver|gold|mithril/
+				put_item.call(box,get_sack_from_type.call(box.type))
+			else unless trash.nil?
+					put_item.call(box,trash)
+					if [checkleft].include?(box.noun) && settings['pause_script_boxes'] && !GameObj.left_hand.contents.empty? || [checkright].include?(box.noun) && settings['pause_script_boxes'] && !GameObj.right_hand.contents.empty?
+						echo "Grab the stuff you want then unpause the script \(;unpause\)"
+						echo "Will trash the box after you unpause the script"
+						pause_script
+						fput "put ##{box.id} in #{trash}"
+						if !righthand?.nil? || !lefthand?.nil?
+							fput "put ##{box.id} in #{trash}"
+						end
+						pause "0.5s"
+					else
+						dothistimeout "drop ##{box.id}", 5, /drop/ if [checkleft,checkright].include?(box.noun)
+					end
+				else
+					if [checkleft].include?(box.noun) && settings['pause_script_boxes'] && !GameObj.left_hand.contents.empty? || [checkright].include?(box.noun) && settings['pause_script_boxes'] && !GameObj.right_hand.contents.empty?
+						echo "Grab the stuff you want then unpause the script \(;unpause\)"
+						echo "Will drop the box after you unpause the script"
+						pause_script
+						dothistimeout "drop ##{box.id}", 5, /drop/ if [checkleft,checkright].include?(box.noun)
+						pause "0.5s"
+					else
+						dothistimeout "drop ##{box.id}", 5, /drop/ if [checkleft,checkright].include?(box.noun)
+					end
+				end
+			end
+		}
+		
+		dothistimeout "unhide", 5, /hiding|visible/ if invisible? or hiding?
+		boxes.each { |b| open_box.call(b) }
+		if settings['save_sell_boxes']
+			sell_boxes.call
+		end
+	end
+	locksmithing = false
+}
+
+#Chronomage Routine
+chronomage = proc {
+	unless jewelrysack = GameObj[UserVars.jewelrysack]
+		msg.call('SLoot: failed to find jewelrysack', :all)
+		next
+	end
+	
+	unless jewelrysack.contents
+		res = dothistimeout "look in ##{jewelrysack.id}", 5, /In the .*?|^That is closed|you see .*?|There is nothing in there/
+		case res
+			when /In the .*?|you see .*?/
+				res = nil
+				unless jewelrysack.contents
+					echo "failed to find contents of sack: #{sack.name}"
+					next
+				end
+			when /^That is closed/
+				open_sack.call(jewelrysack)
+				unless jewelrysack.contents
+					echo "failed to find contents of sack: #{sack.name}"
+					next
+				end
+			when /There is nothing in there/
+				res = nil
+		end
+	end
+	ring_list = jewelrysack.contents.to_a.find_all { |obj| obj.name =~ /gold ring$/ }
+	unless ring_list.empty?
+		start_script('go2', [ 'chronomage', '_disable_confirm_' ])
+		wait_while { running?('go2') }
+		empty_hands
+		if npc = GameObj.npcs.last
+			for ring in ring_list
+				fput "get ##{ring.id}"
+				fput 'unhide' if invisible?
+				fput "give ##{ring.id} to #{npc.noun}"
+				sleep 0.3
+				fput "put ##{ring.id} in ##{jewelrysack.id}" if (GameObj.right_hand.id == ring.id) or (GameObj.left_hand.id == ring.id)
+			end
+		end
+	end
+}
+
+# Sell routine
+sell = proc {
+	cur_room = Room.current.id
+	selling = Hash.new
+
+	# Locksmith boxes first
+	if settings['enable_sell_locksmith']
+		locksmith.call
+	end
+
+	silver_breakdown = Hash.new
+	start_silvers = checksilvers.call
+
+	#Sell gold rings to Chronomage
+	if settings['enable_sell_chronomage']
+		chronomage.call
+	end
+	
+	settings.keys.each { |key|
+		if key =~ /^enable_sell_type_(.*)$/
+			type = $1
+			types.push(type) if settings[key]
+			if found_sacks = GameObj[UserVars.send("#{type}sack")]
+				sacks.push(found_sacks) unless sacks.include?(found_sacks)
+			end
+		end 
+	}
+	
+	settings['overflowsack'].split(',').each { |sack|
+		if found_sacks = GameObj[sack]
+			sacks.push(found_sacks) unless sacks.include?(found_sacks)
+		end
+	}
+	
+	sacks.each { |sack|
+		unless sack.contents
+			res = dothistimeout "look in ##{sack.id}", 3, /In the .*?|^That is closed|you see .*?|There is nothing in there/
+			case res
+				when /In the .*?|you see .*?/
+					res = nil
+					unless sack.contents
+						echo "failed to find contents of sack: #{sack.name}"
+						next
+					end
+				when /^That is closed/
+					open_sack.call(sack)
+					unless sack.contents
+						echo "failed to find contents of sack: #{sack.name}"
+						next
+					end
+				when /There is nothing in there/
+					res = nil
+				end
+			end
+		
+		sack.contents.each { |item|
+			unless item.sellable.nil?
+				if item.type.split(',').any? { |type| type =~ /^#{types.join('|')}$/ }
+					if settings['exclude_list'] == ""
+						settings['exclude_list'] = nil
+					end
+					if item.name =~ /#{settings['exclude_list']}/ && !settings['exclude_list'].nil?
+					else
+						selling[item.sellable] ||= Array.new
+						selling[item.sellable].push(item)
+					end
+				end
+			end
+		}
+	}
+	
+	sell_item = proc { |item|
+		if get_item.call(item,nil)
+			dothistimeout "sell ##{item.id}", 5, /ask|offer/
+			if settings['enable_sell_drop_items']
+				if checkleft == item.noun || checkright == item.noun
+						dothistimeout "drop ##{item.id}", 5, /drop/
+						write_log.call("dropped item #{item.name} of type #{item.type}")
+				end
+			else
+				if checkleft == item.noun || checkright == item.noun
+					item.type.split(',').each { |itemtype|
+						put_item.call(item,UserVars.send(UNTRUSTED_UNTAINT.call("#{itemtype}sack")))
+					}
+					
+					if checkleft == item.noun || checkright == item.noun
+						echo "Could not put #{item} away"
+						echo "Find place for the item or unpause script to drop item"
+						pause_script
+						dothistimeout "drop ##{item.id}", 5, /drop/
+						write_log.call("dropped item #{item.name} of type #{item.type}")
+					end
+				end
+			end
+		end
+	}
+	
+	if selling.size != 0
+		empty_hands
+		
+		selling.each_pair { |location,items|
+			if location == "pawnshop,gemshop"
+				location = "gemshop"
+			else
+				location = location.split(',').first
+			end
+			go2.call(location)
+			items.each { |item| sell_item.call(item) }
+			cur_silver = checksilvers.call
+			silver_breakdown[location] = cur_silver - start_silvers - (silver_breakdown.values.inject { |i,j| i + j }.to_i)
+		}
+	end
+	
+	deposit_coins.call
+	go2.call(cur_room)
+	fill_hands
+	close_open_sacks.call
+	
+	if selling.size != 0
+		log_msg = "selling completed:"
+		msg.call("SLoot: silver breakdown",:bold)
+		silver_breakdown.each_pair { |location,silver|
+			location = location.split(',').first
+			msg.call(sprintf("  %10s: %-6s", location, silver),:mono)
+			log_msg += " #{location} #{silver}"
+		}
+				
+		total_made = silver_breakdown.values.inject { |i,j| i + j }
+		respond
+		msg.call(sprintf("  %10s: %-6s", 'total', total_made),:all)
+		log_msg += " total #{total_made}"
+		write_log.call(log_msg)
+	end
+}
+
+# Returns an array of all dead npcs using GameObj
+find_dead = proc { |type| GameObj.npcs.find_all { |npc| npc.status == 'dead' } }
+
+# Checks if it's safe to enhance skinning by kneeling or stancing to offensive
+safe_to_enhance = proc {
+	next true unless settings['enable_skin_safe_mode']
+	!GameObj.npcs.any? { |npc| npc.status !~ /dead/ }
+}
+
+# Prepares for skinning process
+prepare_skinner = proc { |critter|
+	next if settings['skin_exclude'].include?(critter.name)
+	next if skin_prepared
+	next unless GameObj.npcs.any? { |npc| npc.status =~ /dead/ }
+	next unless settings['enable_skinning']
+	
+	# Sigil of Resolve
+	if Spell[9704].known? && Spell[9704].affordable? && !Spell[9704].active? && settings['enable_skin_sigil']
+		Spell[9704].cast 
+	end
+	
+	# 604 - Skinning
+	if Spell[604].known? && Spell[604].affordable? && settings['enable_skin_604']
+		while !Spell[604].active?
+			Spell[604].cast
+			pause "0.2s"
+		end
+	end
+	
+	if settings['enable_skin_alternate']
+		free_hand.call
+		free_hand2.call
+		
+		if critter.name =~ /krynch|greater krynch|massive krynch|spiked cavern urchin|krag dweller|stone mastiff|lesser stone gargoyle|stone gargoyle/ && UserVars.skinweaponblunt !=""
+			unless get_item.call(UserVars.skinweaponblunt,UserVars.skinweaponbluntsack)
+					open_sack.call(UserVars.skinweaponbluntsack)
+					unless get_item.call(UserVars.skinweaponblunt,UserVars.skinweaponbluntsack)
+							echo "failed to find #{UserVars.skinweaponblunt} in #{UserVars.skinweaponbluntsack}"	
+					end
+			end
+			skinningweaponout = UserVars.skinweaponblunt
+		elsif critter.name =~ /massive troll king/ && UserVars.skinweaponfire !=""
+			unless get_item.call(UserVars.skinweaponfire,UserVars.skinweaponfiresack)
+					open_sack.call(UserVars.skinweaponfiresack)
+					unless get_item.call(UserVars.skinweaponfire,UserVars.skinweaponfiresack)
+							echo "failed to find #{UserVars.skinweaponfire} in #{UserVars.skinweaponfiresack}"	
+					end
+			end
+			skinningweaponout = UserVars.skinweaponfire
+		else
+			unless get_item.call(UserVars.skinweapon,UserVars.skinweaponsack)
+					open_sack.call(UserVars.skinweaponsack)
+					unless get_item.call(UserVars.skinweapon,UserVars.skinweaponsack)
+							echo "failed to find #{UserVars.skinweapon} in #{UserVars.skinweaponsack}"	
+					end
+			end
+			skinningweaponout = UserVars.skinweapon
+		end
+	end
+	
+	if safe_to_enhance.call
+		while settings['enable_skin_kneel'] && !checkkneeling
+			dothistimeout "kneel", 5, /^You kneel down\.$|^You move to a kneeling position\.$/
+		end
+		
+		while settings['enable_skin_offensive'] && percentstance > 0
+			dothistimeout "stance offensive", 5, /^You are now in an offensive stance\.$|^You move into an offensive stance, ready for battle\.$/
+		end
+	end
+	
+	skin_prepared = true
+}
+
+# Get thee up!
+stand_up = proc {
+	if settings['skin_stand_verb'].nil? || settings['skin_stand_verb'].empty?
+		until standing?
+			dothistimeout "stand", 5, /^You stand back up\.$/
+		end
+	else
+		until standing?
+			fput settings['skin_stand_verb']
+		end
+	end
+}
+
+# Change back to previous stance
+stance_back = proc {
+	prev_stance_percent = 80 if prev_stance_percent > 80
+	
+	res = nil
+	while percentstance < prev_stance_percent && res !~ /rage/
+		res = dothistimeout "stance #{prev_stance}", 5, /rage|#{prev_stance}/
+	end
+}
+
+# Finishes up skinning process
+finish_skinner = proc {
+	next unless skin_prepared
+	next unless settings['enable_skinning']
+	
+	if settings['enable_skin_stance_first']
+		stance_back.call
+		stand_up.call
+	else
+		stand_up.call
+		stance_back.call
+	end
+	
+	if settings['enable_skin_alternate']
+		if skinningweaponout == UserVars.skinweapon
+			if settings['enable_stow_left'] && !settings['enable_stow_right']			
+				unless put_item.call(GameObj.left_hand,UserVars.skinweaponsack)
+					echo "failed to put #{UserVars.skinweapon} in #{UserVars.skinweaponsack}"
+				end
+			else
+				unless put_item.call(GameObj.right_hand,UserVars.skinweaponsack)
+					echo "failed to put #{UserVars.skinweapon} in #{UserVars.skinweaponsack}"
+				end
+			end
+		elsif skinningweaponout == UserVars.skinweaponblunt
+			if settings['enable_stow_left'] && !settings['enable_stow_right']			
+				unless put_item.call(GameObj.left_hand,UserVars.skinweaponbluntsack)
+					echo "failed to put #{UserVars.skinweaponblunt} in #{UserVars.skinweaponbluntsack}"
+				end
+			else
+				unless put_item.call(GameObj.right_hand,UserVars.skinweaponbluntsack)
+					echo "failed to put #{UserVars.skinweaponblunt} in #{UserVars.skinweaponbluntsack}"
+				end
+			end
+		elsif skinningweaponout == UserVars.skinweaponfire
+			if settings['enable_stow_left'] && !settings['enable_stow_right']			
+				unless put_item.call(GameObj.left_hand,UserVars.skinweaponfiresack)
+					echo "failed to put #{UserVars.skinweaponfire} in #{UserVars.skinweaponfiresack}"
+				end
+			else
+				unless put_item.call(GameObj.right_hand,UserVars.skinweaponfiresack)
+					echo "failed to put #{UserVars.skinweaponfire} in #{UserVars.skinweaponfiresack}"
+				end
+			end
+		end
+	end
+}
+
+# Skins a critter
+skin_critter = proc { |critter|	
+	next if settings['skin_exclude'].include?(critter.name)
+	
+	cmd = "skin ##{critter.id}"
+	if settings['enable_stow_left'] && !settings['enable_stow_right']
+		cmd += " left" 
+	elsif settings['enable_stow_right']
+		cmd += " right"
+	end
+	
+	res = dothistimeout cmd, 5, /skinned|botched|already been|cannot skin|must be a member|can only skin/
+	if res =~ /cannot skin/
+		settings['skin_exclude'].push(critter.name)
+	end
+}
+
+# Retrieves the previously stored item
+get_stored = proc {
+	next if stored_item.nil?
+	
+	if stored_result.nil?
+		echo 'fixme: stored_item with no stored_result'
+		exit
+	end
+	
+	if stored_result =~ /^You sling .* over your shoulder\.$|^You shift the focus of your voice and your .* moves from your .* hand to your shoulder\.$/
+		fput "remove ##{stored_item.id}"
+	elsif stored_result =~ /^You put .* in your .*\.$|^You sheathe the .* into one of the open slots on your .*\.$|You hang the .* from one of the straps on your .*\.$|You slip your hand to the .* and stow your .* out of sight\.$|^You .* drop .* into .*\.$|^You wipe off .* into one .* along the side of your .*\.$|You slip .* into one of the slots on your .*\.$/
+		fput "get ##{stored_item.id}"
+	else
+		echo "fixme: unknown stored result: #{stored_result}"
+		exit
+	end
+}
+
+get_stored2 = proc {
+	next if stored_item2.nil?
+	
+	if stored_result2.nil?
+		echo 'fixme: stored_item with no stored_result'
+		exit
+	end
+	
+	if stored_result2 =~ /^You sling .* over your shoulder\.$|^You shift the focus of your voice and your .* moves from your .* hand to your shoulder\.$/
+		fput "remove ##{stored_item2.id}"
+	elsif stored_result2 =~ /^You put .* in your .*\.$|^You sheathe the .* into one of the open slots on your .*\.$|You hang the .* from one of the straps on your .*\.$|You slip your hand to the .* and stow your .* out of sight\.$|^You .* drop .* into .*\.$|^You wipe off .* into one .* along the side of your .*\.$|You slip .* into one of the slots on your .*\.$/
+		fput "get ##{stored_item2.id}"
+	else
+		echo "fixme: unknown stored result: #{stored_result2}"
+		exit
+	end
+}
+
+if script.vars[1] =~  /^resetgui$/i
+	settings['window_height'] = nil
+	settings['window_width'] = nil
+	settings['window_position'] = nil
+	
+	echo "gui reset"
+elsif script.vars[1] =~ /^deposit$/i
+	deposit_coins.call
+elsif script.vars[1] =~ /^sell$/i
+	sell.call
+elsif script.vars[1] =~  /^setup$/i
+	setup.call
+elsif script.vars[1] =~ /^version$/i
+	echo "v#{@@version}"
+elsif script.vars[1] =~ /^right$/i
+	unless GameObj.right_hand.contents.nil?
+		res = dothistimeout "look in ##{GameObj.right_hand.id}", 5, /^In the .*\.$/
+		case res
+			when /In the .*?|you see .*?/
+				res = nil
+				unless GameObj.right_hand.contents
+					msg.call("failed to find contents of #{GameObj.right_hand.name}",:all)
+				end
+			when /^That is closed/
+				open_sack.call(GameObj.right_hand)
+				unless GameObj.right_hand.contents
+					msg.call("failed to find contents of #{GameObj.right_hand.name}",:all)
+				end
+			when /There is nothing in there/
+				res = nil
+		end
+	end
+	
+	loot_it.call(GameObj.right_hand.contents,nil)
+elsif script.vars[1] =~  /^(?:help|\?)$/
+	msg.call( sprintf('SLoot v%f', @@version), :all)
+	msg.call( sprintf('%17s: SpiffyJr &lt;spiffyjr@gmail.com&gt;', 'Author'), :mono)
+	msg.call( sprintf('%17s: SLoot is designed to be the most versatile looter available!', 'Description'), :mono)
+	msg.call( sprintf('%17s: ;sloot - runs the skin, search, and loot routine on the current room.', 'Usage'), :mono)
+	respond
+	msg.call( sprintf('%17s     %s', 'help, ?', 'show this help message'), :mono)
+	msg.call( sprintf('%17s     %s', 'setup', 'run the GUI configuration'), :mono)
+	respond
+	msg.call( sprintf('%17s     %s', 'dump', 'dumps the current settings to the screen'), :mono)
+	respond
+	msg.call( sprintf('%17s     %s', 'sell', 'runs the automated selling routine'), :mono)
+	msg.call( sprintf('%17s     %s', 'deposit', 'deposits your coins according to settings'), :mono)
+	respond
+	msg.call( sprintf('%17s     %s', 'sack', 'runs sloot on the sack specified'), :mono)
+	msg.call( sprintf('%17s     %s', 'left', 'runs sloot on the sack in your left hand'), :mono)
+	msg.call( sprintf('%17s     %s', 'right', 'runs sloot on the sack in your right hand'), :mono)
+end
+
+exit unless script.vars[1].nil?
+
+# Hooks for disk tracking and statistics
+install_hooks.call
+
+#Pre-Loot Stance
+if settings['change_stance_name'] == ""
+	settings['change_stance_name'] = nil
+end
+if settings['change_stance'] && !settings['change_stance_name'].nil?
+	if settings['change_stance_name'] =~ /off/
+		change_stance = 0
+	elsif settings['change_stance_name'] =~ /adv/
+		change_stance = 20
+	elsif settings['change_stance_name'] =~ /for/
+		change_stance = 40
+	elsif settings['change_stance_name'] =~ /neu/
+		change_stance = 60
+	elsif settings['change_stance_name'] =~ /gua/
+		change_stance = 80
+	elsif settings['change_stance_name'] =~ /def/
+		change_stance = 100
+	end
+	while percentstance != change_stance
+		waitrt?
+		fput "stance #{settings['change_stance_name']}"
+		prev_stance = checkstance
+		prev_stance_percent = percentstance
+	end
+end
+
+# Is safe hiding enabled?
+if settings['enable_safe_hiding'] && hiding?
+	bad_npcs = GameObj.npcs.find_all { |npc| 
+		npc.type !~ /escort/ && npc.status !~ /dead/ && npc.name !~ /^(?:#{settings['safe_ignore'].to_s})$/
+	}
+	exit if bad_npcs.length > 0
+end
+
+# Keep track of loot IDs in the current room if we're only looting our critter drops
+previous_loot_ids = Array.new
+if settings['enable_self_drops']
+	previous_loot_ids = GameObj.loot.collect { |l| l.id }
+end
+
+critters = find_dead.call
+
+if settings['enable_skinning']
+	critters.each { |critter| 
+		next if critter.name =~ /Grimswarm/ || critter.type =~ /bandit/
+		next if critter.name =~ /krynch|greater krynch|massive krynch|spiked cavern urchin|krag dweller|stone mastiff|lesser stone gargoyle|stone gargoyle/  && UserVars.skinweaponblunt ==""
+		next if critter.name =~ /massive troll king/ && UserVars.skinweaponfire ==""
+		prepare_skinner.call(critter)
+		skin_critter.call(critter) 
+	}
+	finish_skinner.call
+end
+
+if settings['critter_exclude'] == ""
+	settings['critter_exclude'] = nil
+end
+
+critters.each { |critter|
+	next if critter.name =~ /#{settings['critter_exclude']}/ && !settings['critter_exclude'].nil?
+	dothistimeout "loot ##{critter.id}", 5, /^You search the .*\.$|^What were you referring to/
+	break unless settings['enable_search_all']
+}
+pause "0.5s"
+loot_it.call(GameObj.loot,previous_loot_ids)
+gather_ammo.call
+
+get_stored2.call
+get_stored.call
+close_open_sacks.call

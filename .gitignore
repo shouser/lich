@@ -1,0 +1,8 @@
+.idea
+logs
+data
+keys
+maps
+temp
+*.iml
+atlassian-ide-plugin.xml

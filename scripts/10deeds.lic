@@ -1,0 +1,16 @@
+=begin
+This will withdraw 45k from landing bank, run to the caravansary and buy 10 dwarf rubies, then get you 10 deeds
+=end
+
+start_script 'go2', [ '400', '_disable_confirm_' ]
+wait_while { running?('go2') }
+fput "withdraw 45000"
+start_script 'go2', [ '9269', '_disable_confirm_' ]
+wait_while { running?('go2') }
+10.times{multifput("order 14","buy","stow ruby")}
+start_script 'go2', [ '4044', '_disable_confirm_' ]
+wait_while { running?('go2') }
+10.times{multifput("go tapestry","ring chime with mallet","ring chime with mallet","kneel","get my ruby","drop my ruby","ring chime with mallet","out")}
+start_script 'go2', [ '228', '_disable_confirm_' ]
+wait_while { running?('go2') }
+echo "You should have 10 more deeds now"

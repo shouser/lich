@@ -1,0 +1,120 @@
+=begin
+Catrania's child.lic script, tweaked.  prefer this over the "childgoto" script bc it moves faster.
+USAGE:  once you have a kid, type ;child2
+wow!  that was easy!
+
+11/06/10 - added disabling spells for when there are NPCs present (but no PCs)...can change by adding/removing/reordering numbers from list. (line 13)
+12/16/10 - and onward: bug fixes
+02/19/10 - added illistim and disabled automatic reward collection
+03/07/10 - disabling spells will now only be cast when targetable NPCs are in the room.  no more ewaving the Fleet Captain
+03/28/10 - i noticed sometimes it was prepping ewave when only the kid was present; these 'false positives' should be fixed now
+06/04/11 - you people never tell me when shit is broken....I tried to fix a few things...hope i didnt make it worse.  LET ME KNOW
+         - should go to helgas for landing guard and back to gate if it just missed him again
+         - added Teras
+04/17/12 - added Vaalor.
+05/18/12 - made it work in RR....wasn't seeing the purser properly.
+12/10/12 - made it cast 213 correctly as a disabling spell  (was trying to cast 213 AT critters before...I didn't know you couldnt!)  thanks to Velfi for pointing it out.
+		 - also fixed the purser bug.  sorry about that...it thought everyone was in RR when they weren't.
+
+TO DO  - do not prep disabler when companion/familiar/etc the only other npc present....might be too hard to account for all of these without pushing into an array, and the pet shouldnt get there before the script checks anyway unless it's really fast.
+
+~Moredin
+oh yeah....this script REQUIRES STEP2.lic
+=end
+
+Watchfor.new ("You failed"){Script.self.kill}
+disabler = [ 410, 709, 213, 912, 1011, 316, 619, 1219, 135 ]
+
+	if town = /back alive to (.*) /.match(checkbounty).captures.first
+		echo "#{town}"
+		if town =~ /one of the Vornavis gate/
+			place = 5576
+			reportee = 'guard'
+		elsif town =~ /one of the Icemule Trace gate/
+			place = 2487
+			reportee = 'guard'
+		elsif town =~/one of the guardsmen just inside the Ta'Illistim City/
+			place = 37
+			reportee = 'guard'
+		elsif town =~ /the purser of River's/
+			place = 10915
+			reportee = 'purser'
+		elsif town =~ /Quin Telaren of Wehnimer's/
+			place = 420
+			place2 = 3809
+			reportee = 'guard'
+		elsif town =~ /one of the Ta'Vaalor gate/		#added vaalor here
+			place = 3727
+			place2 = 5827
+			reportee = 'Ryaro|Cormah|Thaevar|Lafevartas|Zydeth|Dhoianna|Arnlis|Gaelthar'
+		elsif town =~ /the dwarven militia sergeant near the Kharam-Dzu/
+			place = 1957
+			reportee = 'sergeant'
+		end
+	end
+
+loop {
+if Room.current.id != place
+	thatroom = Room.current.id
+	waitrt?
+	start_script 'step2', ["#{place}"]
+	wait_until{ thatroom != Room.current.id }
+		waitrt?
+		if GameObj.npcs.size != nil && !checkpcs && !GameObj.npcs.any?{ |npc| npc.noun =~ /#{reportee}/ }
+			disabler.any? { |num| if Spell[num].known? && Spell[num].affordable?; if num == 213; Spell[num].cast; else Spell[num].cast("target"); end; end } unless GameObj.npcs.size == 1 && GameObj.npcs.find?{ |npc| npc.noun == 'child' }
+		end
+		
+	
+		
+	wait_until{ GameObj.npcs.any?{ |npc| npc.noun == 'child' } }
+	if Room.current.id != place
+		waitrt?
+		redo
+	else
+		waitrt?
+		break
+	end
+end
+}
+
+if place == 10915 && Room.current.id == place
+	wait_until {GameObj.npcs.any?{ |npc| npc.noun =~ /child/ }}
+	fput "ask purser about bounty"
+elsif Room.current.id == place && GameObj.npcs.any?{ |npc| npc.noun =~ /#{reportee}/ }
+	if GameObj.npcs.to_s =~ /(#{reportee})/ 
+		fput "ask #{$1} about bounty"
+	else
+		#not sure if this is needed yet till i get out of vaalor
+		fput "ask #{reportee} about bounty"
+	end
+elsif Room.current.id == place && !GameObj.npcs.any?{ |npc| npc.noun =~ /#{reportee}/ }
+	loop {
+		if Room.current.id != place2
+			start_script 'step2', ["#{place2}"]
+			waitforre /^A.*child.*\, following you\./
+			redo if Room.current.id != place2
+		elsif Room.current.id == place2 && !GameObj.npcs.any?{ |npc| npc.noun =~ /#{reportee}/ }
+			loop {
+				if Room.current.id != place
+					start_script 'step2', ["#{place}"]
+					waitforre /^A.*child.*\, following you\./
+					redo if Room.current.id != place2
+				else
+					break
+				end
+			}
+		else
+			break
+		end
+		}
+else
+	echo "Fixme....tell Moredin he broke child2"
+end
+waitfor "Adventurer's Guild"
+echo ""
+echo "You got the kid home safe.   UNPAUSE the script to go collect the reward, otherwise KILL the script."
+echo ""
+pause_script
+start_script 'go2',  ['advguild']
+wait_while {running? ('go2')}
+fput "ask taskmaster about bounty"
